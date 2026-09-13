@@ -49,6 +49,7 @@ class CheckResult:
     check: dict[str, Any]
     passed: bool
     detail: str
+    layer: str = "physics"
 
 
 @dataclass
@@ -80,39 +81,51 @@ def _approx(value: float, target: float, tol: float) -> tuple[bool, str]:
 def run_case(
     spec: ToolSpec, case: dict[str, Any], against_spec: ToolSpec | None = None
 ) -> list[CheckResult]:
-    """执行一个 case（含 sweep 展开），返回逐检查结果。"""
+    """执行一个 case（含 sweep 展开），返回逐检查结果；单 case 异常不炸套件。"""
     results: list[CheckResult] = []
     name = case["name"]
-    sweep = case.get("sweep") or {}
-    sweep_keys = sorted(sweep)
-    combos: list[dict[str, Any]] = [{}]
-    for key in sweep_keys:
-        combos = [dict(c, **{key: v}) for c in combos for v in sweep[key]]
+    layer = case.get("layer", "physics")
+    try:
+        sweep = case.get("sweep") or {}
+        sweep_keys = sorted(sweep)
+        combos: list[dict[str, Any]] = [{}]
+        for key in sweep_keys:
+            combos = [dict(c, **{key: v}) for c in combos for v in sweep[key]]
 
-    runs: list[dict[str, Any]] = []
-    for combo in combos:
-        inputs = {**case.get("inputs", {}), **combo}
-        out = spec.run(inputs)
-        runs.append({"inputs": inputs, "output": out})
-        if against_spec is not None:
-            a_inputs = {**case.get("against_inputs", {}), **combo}
-            a_map = {"L": "N", "bc": None}
-            a_inputs = {a_map.get(k, k): v for k, v in a_inputs.items() if a_map.get(k, k)}
-            runs[-1]["against_output"] = against_spec.run(a_inputs)
+        runs: list[dict[str, Any]] = []
+        for combo in combos:
+            inputs = {**case.get("inputs", {}), **combo}
+            out = spec.run(inputs)
+            runs.append({"inputs": inputs, "output": out})
+            if against_spec is not None:
+                a_inputs = {**case.get("against_inputs", {}), **combo}
+                a_map = {"L": "N", "bc": None}
+                a_inputs = {a_map.get(k, k): v for k, v in a_inputs.items() if a_map.get(k, k)}
+                runs[-1]["against_output"] = against_spec.run(a_inputs)
+    except Exception as exc:  # noqa: BLE001 —— 工具崩溃 = 该 case 所有检查 fail
+        err = f"{type(exc).__name__}: {exc}"
+        return [
+            CheckResult(case=name, check=check, passed=False,
+                        detail=f"case 执行异常：{err}", layer=layer)
+            for check in case.get("checks", [])
+        ]
 
     for check in case.get("checks", []):
         op = check["op"]
         passed_all, detail_all = True, []
-        for i, run in enumerate(runs):
-            suffix = f"［{run['inputs'].get('N', run['inputs'].get('L'))}］" if combos != [{}] else ""
-            ok, detail = _apply_check(op, check, run)
-            passed_all &= ok
-            detail_all.append(detail)
-            if not ok:
-                break
+        try:
+            for run in runs:
+                ok, detail = _apply_check(op, check, run)
+                passed_all &= ok
+                detail_all.append(detail)
+                if not ok:
+                    break
+        except Exception as exc:  # noqa: BLE001 —— 检查器异常也按 fail 处理
+            passed_all = False
+            detail_all.append(f"检查执行异常：{type(exc).__name__}: {exc}")
         results.append(CheckResult(
-            case=f"{name}{suffix if combos != [{}] else ''}",
-            check=check, passed=passed_all, detail="; ".join(detail_all),
+            case=name, check=check, passed=passed_all,
+            detail="; ".join(detail_all), layer=layer,
         ))
     return results
 
@@ -170,13 +183,24 @@ def run_benchmark(path: str | Path) -> GoldenReport:
         has_sweep_op = any(c["op"] == "increasing_toward" for c in case.get("checks", []))
         if has_sweep_op:
             combos = [dict(zip(sorted(sweep), vals)) for vals in _product(sweep)]
-            runs = []
-            for combo in combos:
-                inputs = {**case.get("inputs", {}), **combo}
-                runs.append({"inputs": inputs, "output": tool.run(inputs)})
+            try:
+                runs = []
+                for combo in combos:
+                    inputs = {**case.get("inputs", {}), **combo}
+                    runs.append({"inputs": inputs, "output": tool.run(inputs)})
+            except Exception as exc:  # noqa: BLE001
+                err = f"{type(exc).__name__}: {exc}"
+                for check in case.get("checks", []):
+                    report.results.append(CheckResult(
+                        case["name"], check, False, f"case 执行异常：{err}",
+                        layer=case.get("layer", "physics"),
+                    ))
+                continue
             for check in case.get("checks", []):
                 ok, detail = _apply_sweep_check(check["op"], check, runs)
-                report.results.append(CheckResult(case["name"], check, ok, detail))
+                report.results.append(CheckResult(
+                    case["name"], check, ok, detail, layer=case.get("layer", "physics"),
+                ))
         else:
             report.results.extend(run_case(tool, case, against))
     return report

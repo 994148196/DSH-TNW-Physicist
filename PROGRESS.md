@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0 ✅ / Phase 1 ✅ / Phase 2 ✅ / Phase 3 ✅ 均已完成并通过验收；下一步 Phase 4（Verification Manager）。
+**一句话状态**：Phase 0–4 ✅ 均已完成并通过验收；下一步 Phase 5（Research Loop 闭环）。
 
 最后更新：2026-09-13
 
@@ -14,7 +14,8 @@
 | Phase 1 | Research State：模型 + SQLite + 事件日志 + 恢复 | ✅ 完成 |
 | Phase 2 | Planning 站点（UNDERSTAND/HYPOTHESIZE/PLAN/CRITIC + Decision） | ✅ 完成 |
 | Phase 3 | Experiment Manager + 种子工具（simple_ed、dmrg_adapter） | ✅ 完成 |
-| Phase 4 | Verification Manager（三层基准 + 证据资格门） | ⬜ 未开始 |
+| Phase 4 | Verification Manager（三层基准 + 证据资格门） | ✅ 完成 |
+| Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ⬜ 未开始 |
 | Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ⬜ 未开始 |
 | Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | ⬜ 未开始 |
 | Phase 7 | Research Memory | ⬜ 未开始 |
@@ -75,6 +76,20 @@
 
 验收标准（计划 v2 §9 Phase 3）：批准的计划 → 自动建实验 → 批量跑 → 落账 → 实验摘要。**全部达成。**
 
+## Phase 4 验收清单
+
+- [x] `qresearch/verification/manager.py`——VerificationManager：
+  - `verify_tool`：跑该工具全部 golden 基准 → software/numerical/physics 三层逐层 VerificationReportItem（缺基准 = UNCERTAIN"禁止出具物理证据"）；
+  - `verify_experiment`：程序层（结果可读 + 同参数复跑可重复）+ 数值层（残差阈值 / 变分上界，字段缺失判 UNCERTAIN 不冒充合格）+ 物理层（继承工具 golden 结论）→ overall 取最差；VerificationReport 落账，验证状态回写 Experiment，事件留痕；
+  - `evidence_gate`：只有 overall=PASSED 放行；UNCERTAIN 需人工复核、FAILED 禁止出具证据（计划 v2 §7.6"不过关的实验取消证据资格"）。
+- [x] golden 检查器加固：逐 case 异常隔离（工具崩溃 = 该 case 全部检查 fail，不炸套件）、layer 标签贯通
+- [x] 复现语义校准：复跑判定为物理精度内可重复（相对容差 1e-10）——ARPACK/BLAS ulp 级抖动允许，真实不确定行为必抓
+- [x] simple_ed 修复隐藏缺陷：ARPACK 固定初始向量 v0（原随机 v0 导致机器精度级不可复现）
+- [x] `pytest` 全绿：**55 passed**（新增 verification 8 + golden 语义更新 1）
+- [x] **验收条文达成**：`phase4_demo.py`——注入偏移 -0.01J 的错误实现 → 三层全抓（software 复跑不一致；解析值 |-1.51−(-1.5)|=1e-2>1e-10；Bethe/差分/自洽层连锁失败）→ VerificationReport 出具 → 证据门关闭；正常实验全部放行 → **PHASE 4 DEMO: PASS**
+
+验收标准（计划 v2 §9 Phase 4）：注入一个故意写错的工具能被抓住并出具报告。**达成。**
+
 ## 里程碑日志
 
 ### 2026-09-13（开工日）
@@ -94,7 +109,9 @@
 - 测试：**47 passed**。实现期修了三处自己的 bug（COO 构造签名、S⁺ 跃迁需 Sz=+1 中转扇区、关联求和漏除 N）——均被 golden 解析值当场拦截，验证了"出题人≠答题人"机制有效。
 - **quimb 平台缺陷（已记录、已绕过）**：quimb 1.15 的 DMRG/DMRG2 局部本征求解器在本机产生 NaN/Singular matrix（与 NUMBA_DISABLE_JIT 无关）。dmrg_adapter 主路径保留 DMRG2，运行时自动回退 quimb MPO 稠密对角化（仍为独立实现，差分基准 L≤10 一致到 1e-15），`method`/`fallback_note` 字段留痕，缺陷写入 known_limitations。L>14 的 DMRG 需在 quimb 可用的环境运行（Phase 8 HPC 场景）。
 - **演示验收 PASS**：批准计划 → 6 实验自动建立 → 子进程批量执行 → 全部落账 → 摘要表；golden 16/16。
-- 下一步：**Phase 4**——Verification Manager：三层验证（软件/数值/物理）编排、证据资格门（Evidence 必须挂在通过验证的实验上）、VerificationReport 落账。
+- **Phase 4 完成**：三层验证编排 + VerificationReport + 证据资格门。验证层当场抓到两个真问题：① simple_ed 用 ARPACK 随机初始向量 → 复跑 ulp 级不可复现（修：固定 v0，Marshall 定理保证与基态有重叠）；② 复现语义校准为物理精度内可重复（1e-10 相对容差），ulp 抖动允许、真实不确定必抓。
+- **验收演示 PASS**：注入偏移 -0.01J 的同名错误实现 → software 层解析值、numerical 层 oracle 差分、physics 层 Bethe 极限/自洽连锁失败 + 复跑不一致 → 报告出具、证据门关闭；正常实验放行。
+- 下一步：**Phase 5**——Research Loop 闭环：ANALYZE 站点（五段式结果分析，每条解读挂 evidence id）+ DECIDE 站点（Decision checklist + 预算闸）+ 报告生成；验收：MVP 问题全自动 3 轮（人工只批计划与终止），全程可回放。
 
 ## 阻塞 / 待决
 

@@ -150,7 +150,10 @@ def run_simple_ed(inputs: dict[str, Any]) -> dict[str, Any]:
         out["gap"] = float(evals[1] - evals[0]) if p.want_gap else None
     else:
         k = 2 if p.want_gap else 1
-        evals, evecs = eigsh(H, k=k, which="SA", tol=0, maxiter=10000)
+        # 固定初始向量：ARPACK 默认随机 v0 会导致机器精度级不可复现。
+        # Marshall 符号规则保证 Sz=0 基态振幅全正，与全 1 向量必有重叠。
+        v0 = np.ones(dim) / np.sqrt(dim)
+        evals, evecs = eigsh(H, k=k, which="SA", v0=v0, tol=0, maxiter=10000)
         order = np.argsort(evals)
         evals, evecs = evals[order], evecs[:, order]
         E0 = float(evals[0])

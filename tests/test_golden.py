@@ -19,17 +19,19 @@ def test_dmrg_differential_golden():
     assert report.all_passed, report.summary()
 
 
-def test_unknown_check_op_rejected(tmp_path):
+def test_unknown_check_op_reported_as_failure(tmp_path):
+    """未知 op 不炸套件：该检查判 fail，其余检查照常。"""
     import yaml
 
     bad = {
         "tool": "simple_ed",
         "cases": [{
-            "name": "bad", "inputs": {"N": 4},
+            "name": "bad", "layer": "software", "inputs": {"N": 4},
             "checks": [{"field": "E0", "op": "nonsense_op", "value": -2.0, "tol": 1e-9}],
         }],
     }
     p = tmp_path / "bad.yaml"
     p.write_text(yaml.safe_dump(bad), encoding="utf-8")
-    with pytest.raises(ValueError, match="未知检查"):
-        run_benchmark(p)
+    report = run_benchmark(p)
+    assert not report.all_passed
+    assert "检查执行异常" in report.results[0].detail
