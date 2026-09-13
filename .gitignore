@@ -11,9 +11,9 @@ dist/
 build/
 
 # 科研运行时数据：状态库要备份，大产物不入库
-research_data/experiments/
-research_data/artifacts/
-research_data/dsh_home/
+research_data/
+
+
 
 # 环境与密钥
 .env
@@ -23,4 +23,4 @@ research_data/dsh_home/
 Thumbs.db
 .DS_Store
 .dsh-runtime/
-research_data/demo/
+

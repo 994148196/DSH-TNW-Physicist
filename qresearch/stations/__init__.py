@@ -1,0 +1,1 @@
+"""站点执行器：UNDERSTAND / HYPOTHESIZE / PLAN / CRITIC（计划 v2 §6.1、§7.1–7.4）。"""

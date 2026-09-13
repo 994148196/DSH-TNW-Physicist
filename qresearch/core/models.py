@@ -49,8 +49,10 @@ class Goal(BaseModel):
     goal_id: str = Field(default_factory=lambda: _new_id("goal"))
     project_id: str
     question: str
+    quantities: list[str] = Field(default_factory=list)  # 目标物理量
     success_criteria: list[str] = Field(min_length=1)
     constraints: dict[str, Any] = Field(default_factory=dict)
+    assumptions: list[str] = Field(default_factory=list)  # 理解阶段识别的默认假设与不确定性
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -91,6 +93,7 @@ class ResearchPlan(BaseModel):
     version: int = 1
     status: PlanStatus = PlanStatus.AWAITING_APPROVAL
     steps: list[PlanStep] = Field(min_length=1)
+    risks: list[str] = Field(default_factory=list)
     based_on_decision: str | None = None
     diff_summary: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
