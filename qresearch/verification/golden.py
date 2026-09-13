@@ -42,6 +42,25 @@ def dense_exact_ground(N: int, J: float = 1.0) -> dict[str, float]:
     return {"E0": float(evals[0]), "gap": float(evals[1] - evals[0])}
 
 
+def dense_tfim_ground(N: int, h: float, J: float = 1.0) -> dict[str, float]:
+    """横场 Ising 链（PBC 单计数）稠密对角化——独立实现。
+
+    约定（与基准文件一致）：H = -J Σ_i σ^x_i σ^x_{i+1} - h Σ_i σ^z_i（泡利矩阵）。
+    基用 z 方向计算基：σ^x 项翻转两比特（无符号），σ^z 本征值 = 1-2b（b∈{0,1}）。
+    解析锚点：h=0 → E0=-NJ；h=J 临界 → e0(∞)=-4J/π（Lieb-Schultz-Mattis）。
+    """
+    dim = 2**N
+    H = np.zeros((dim, dim))
+    for state in range(dim):
+        bits = [(state >> i) & 1 for i in range(N)]
+        H[state, state] += -h * sum(1 - 2 * b for b in bits)
+        for i in range(N):
+            j = (i + 1) % N
+            H[state ^ (1 << i) ^ (1 << j), state] += -J
+    evals = np.linalg.eigvalsh(H)
+    return {"E0": float(evals[0]), "gap": float(evals[1] - evals[0])}
+
+
 # ---------------------------------------------------------------- 报告对象
 @dataclass
 class CheckResult:
@@ -139,7 +158,15 @@ def _apply_check(op: str, check: dict[str, Any], run: dict[str, Any]) -> tuple[b
             target = out[check["op_param_field"]]
         return _approx(float(value), float(target), float(check["tol"]))
     if op == "oracle_dense":
-        oracle = dense_exact_ground(run["inputs"]["N"])
+        oracle_name = check.get("oracle", "heisenberg")
+        if oracle_name == "heisenberg":
+            oracle = dense_exact_ground(run["inputs"]["N"])
+        elif oracle_name == "tfim":
+            oracle = dense_tfim_ground(
+                run["inputs"]["N"], run["inputs"]["h"], run["inputs"].get("J", 1.0)
+            )
+        else:
+            raise ValueError(f"未知 oracle: {oracle_name}")
         field_name = check.get("oracle_field", "E0")
         return _approx(float(out[check["field"]]), oracle[field_name], float(check["tol"]))
     if op == "diff":
@@ -168,11 +195,15 @@ def _apply_sweep_check(op: str, check: dict[str, Any], runs: list[dict[str, Any]
     return ok, detail
 
 
-def run_benchmark(path: str | Path) -> GoldenReport:
+def run_benchmark(
+    path: str | Path, tool_override: str | None = None
+) -> GoldenReport:
+    """跑一个基准文件。tool_override：候选工具名（Tool Builder 构建期用，
+    工具注册后以文件内 tool 名运行）。"""
     path = Path(path)
     spec_raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     load_seed_tools()
-    tool = get_tool(spec_raw["tool"])
+    tool = get_tool(tool_override or spec_raw["tool"])
     against = None
     if spec_raw.get("against"):
         against = get_tool(spec_raw["against"])

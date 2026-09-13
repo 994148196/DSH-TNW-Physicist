@@ -35,3 +35,32 @@ def test_unknown_check_op_reported_as_failure(tmp_path):
     report = run_benchmark(p)
     assert not report.all_passed
     assert "检查执行异常" in report.results[0].detail
+
+
+def test_tfim_oracle_anchors():
+    """出题人自检：TFIM 独立 oracle 的解析锚点（h=0 铁磁、临界 -4/pi）。"""
+    import math
+
+    from qresearch.verification.golden import dense_tfim_ground
+
+    for N in (4, 6, 8):
+        r = dense_tfim_ground(N, 0.0)
+        assert abs(r["E0"] - (-N)) < 1e-10
+        assert abs(r["gap"]) < 1e-8  # 两重简并
+    target = -4.0 / math.pi
+    e12 = dense_tfim_ground(12, 1.0)["E0"] / 12
+    assert abs(e12 - target) < 1e-2
+
+
+def test_tfim_fixture_spec_first():
+    """spec 先行：tfim_ed golden 在工具实现之前定稿，结构合法、锚点已锁。"""
+    import yaml
+
+    path = Path(__file__).resolve().parents[1] / "tool_specs" / "tfim_ed.golden.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert raw["tool"] == "tfim_ed"
+    known_ops = {"approx", "oracle_dense", "diff", "increasing_toward"}
+    for case in raw["cases"]:
+        assert case["layer"] in ("numerical", "physics")
+        for check in case["checks"]:
+            assert check["op"] in known_ops

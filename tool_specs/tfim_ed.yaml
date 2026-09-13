@@ -1,0 +1,62 @@
+# Tool Spec：tfim_ed —— Phase 6 Tool Builder 的出题侧工件（先于任何实现定稿）
+#
+# 缺口来源：横场 Ising 链量子相变研究需要 ED 精确解，注册表中无对应工具。
+# 铁律（计划 v2 §8）：出题人≠答题人。本文件与其引用的 golden 定值由人依据
+# 解析/文献/独立实现写定；DSH 编码站实现工具，不得修改本文件与 fixtures/容差。
+tool: tfim_ed
+version: "1.0.0"
+type: exact_solver
+purpose: 一维横场 Ising 链（PBC）基态能量、能量密度与能隙的精确对角化
+
+physics_convention: >-
+  H = -J * Σ_{i=0}^{N-1} σ^x_i σ^x_{i+1 mod N} - h * Σ_i σ^z_i，
+  σ 为泡利矩阵。PBC 单计数键。计算基取 σ^z 本征态。
+  临界点在 h = J；热力学极限临界能量密度 e0(∞) = -4J/π。
+
+inputs:
+  N:
+    type: int
+    bounds: "2 <= N <= 20"
+    desc: 格点数
+  J:
+    type: float
+    default: 1.0
+    desc: 耦合常数
+  h:
+    type: float
+    default: 1.0
+    desc: 横场强度（>=0）
+  want_gap:
+    type: bool
+    default: true
+    desc: 是否计算能隙
+
+outputs:
+  E0: 基态能量（绝对值，float）
+  e0: 基态能量密度 E0/N（float）
+  gap: 第一激发能隙（want_gap=true 时输出）
+  residual: 数值残差 |H ψ0 - E0 ψ0|（数值层验证不变量）
+  dim: 希尔伯特空间维数 2^N（int）
+  method: 求解方法说明（str）
+
+invariants:
+  - residual <= 1e-8（数值层）
+  - h=0 且 N 为偶数时 E0 = -N*J（铁磁基态，所有键对齐；两重简并 → gap=0）
+  - h=J 时 e0 随 N 增大单调趋近 -4J/π（从下方递增）
+
+falsification_basis:
+  - 解析：h=0（偶 N）基态 E0=-NJ，gap=0
+  - 文献：临界 e0(∞) = -4J/π（Lieb-Schultz-Mattis, 1961）
+  - 独立实现：全 2^N 稠密对角化 oracle（qresearch.verification.golden.dense_tfim_ground）
+
+fixtures_ref: tool_specs/tfim_ed.golden.yaml
+fixtures_install_to: benchmarks/golden/tfim_ed.yaml
+
+anti_collusion: |-
+  出题人 = 本 spec 作者（人）+ 解析/文献/独立 oracle 来源；
+  答题人 = DSH 编码站。fixtures 数值与容差在编码开始前已锁定（本文件+golden yaml），
+  DSH 全程不可见修改路径；审批时 diff 报告对照本 spec 审查。
+
+known_limitations:
+  - 奇数 N 在 h=0 时 PBC 铁磁受挫，E0 ≠ -NJ（fixtures 只用偶 N）
+  - N>20 稠密/Lanczos 开销显著，属 HPC 场景（Phase 8）

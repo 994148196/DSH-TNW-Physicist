@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -89,11 +90,14 @@ def main() -> int:
     data.mkdir(parents=True, exist_ok=True)
     storage = Storage(data / "state.sqlite")
     log = EventLog(data / "events.jsonl")
-
     from qresearch.dsh_client import DSHClient
 
     if live:
-        client = DSHClient()  # 真实 DSH runtime + DeepSeek 模型
+        # 真实 DSH runtime + DeepSeek 模型；cwd 指向沙箱目录，
+        # 站内 agent 的草稿脚本不会写进仓库根（Phase 2/5 教训）
+        sandbox = data / "sandbox"
+        sandbox.mkdir(parents=True, exist_ok=True)
+        client = DSHClient(cwd=sandbox)
     else:
         queues = {
             "understand": [UNDERSTAND_OK], "hypothesize": [HYP_OK],
@@ -113,11 +117,16 @@ def main() -> int:
 
         client = DSHClient(runner=scripted)
 
-    summary = run_research_loop(
-        client, storage, log, "proj_phase5_demo",
-        "一维自旋 1/2 反铁磁 Heisenberg 链基态能量密度与 Bethe ansatz 对照研究",
-        rounds=3, auto_approve=True,
-    )
+    summary = None
+    project_id = f"proj_phase5_demo_{int(time.time())}"  # 唯一 id：DSH session 存在于 dsh_home，重跑同 id 会冲突
+    try:
+        summary = run_research_loop(
+            client, storage, log, project_id,
+            "一维自旋 1/2 反铁磁 Heisenberg 链基态能量密度与 Bethe ansatz 对照研究",
+            rounds=3, auto_approve=True,
+        )
+    finally:
+        client.close()  # 结束 runtime 子进程（含异常路径）
 
     print("\n== 闭环摘要 ==")
     for k, v in summary.items():
@@ -128,7 +137,7 @@ def main() -> int:
     for d_id in summary["decisions"]:
         d = storage.get(Decision, d_id)
         print(f"  [{d.type.value}] {d.recommendation.value} — {(d.rationale or '')[:80]}")
-    print(f"\n事件回放：{data / 'events.jsonl'}（{len(log.events(project_id='proj_phase5_demo'))} 条）")
+    print(f"\n事件回放：{data / 'events.jsonl'}（{len(log.events(project_id=project_id))} 条）")
     print(f"研究报告：{summary['report']}")
 
     if live:
