@@ -10,10 +10,13 @@ requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.6",
     "PyYAML>=6.0",
+    "numpy>=1.26",
+    "scipy>=1.14",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+tensor = ["quimb>=1.10"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["qresearch"]

@@ -16,6 +16,15 @@ def actions_text() -> str:
     return "\n".join(f"- {name}: {desc}" for name, desc in ACTIONS.items())
 
 
+def tools_text() -> str:
+    """已注册工具清单（PLAN/CRITIC 引用现实，避免计划引用不存在的工具）。"""
+    from qresearch.tools.registry import load_seed_tools, tool_names
+
+    load_seed_tools()
+    names = tool_names()
+    return "、".join(names) if names else "（无——只能使用解析/对照类步骤）"
+
+
 UNDERSTAND = """你是量子多体物理研究的规划助手。请把用户的科研问题翻译成结构化研究目标。
 
 用户问题：
@@ -48,6 +57,8 @@ PLAN = """为以下研究目标制定研究计划（第 {version} 版）。
 
 可用动作词汇表：
 {actions}
+
+已注册工具（steps.tools 只能引用这些）：{tools}
 
 上一轮批评意见：
 {critic_notes}

@@ -1,0 +1,34 @@
+# golden 基准：dmrg_adapter 与 simple_ed 小系统差分（计划 v2 §8.3）
+#
+# 两种独立实现（张量网络 MPO/DMRG vs Sz=0 扇区稀疏 Lanczos）在同约定下
+# 给出相同基态能量。约定：H = J Σ S_i·S_{i+1}，PBC（L=2 双计）。
+tool: dmrg_adapter
+against: simple_ed
+version: 1
+cases:
+  - name: diff_L4
+    layer: numerical
+    inputs: {L: 4, J: 1.0}
+    against_inputs: {N: 4, J: 1.0}
+    checks:
+      - {op: diff, field: E0, against_field: E0, tol: 1.0e-8,
+         source: "独立实现差分：quimb MPO vs 自研 ED"}
+  - name: diff_L6
+    layer: numerical
+    inputs: {L: 6, J: 1.0, want_gap: true}
+    against_inputs: {N: 6, J: 1.0, want_gap: true}
+    checks:
+      - {op: diff, field: E0, against_field: E0, tol: 1.0e-8}
+      - {op: diff, field: gap, against_field: gap, tol: 1.0e-6}
+  - name: diff_L8
+    layer: numerical
+    inputs: {L: 8, J: 1.0}
+    against_inputs: {N: 8, J: 1.0}
+    checks:
+      - {op: diff, field: E0, against_field: E0, tol: 1.0e-8}
+  - name: diff_L10
+    layer: numerical
+    inputs: {L: 10, J: 1.0}
+    against_inputs: {N: 10, J: 1.0}
+    checks:
+      - {op: diff, field: E0, against_field: E0, tol: 1.0e-8}

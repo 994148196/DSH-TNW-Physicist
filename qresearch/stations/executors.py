@@ -10,7 +10,7 @@ from qresearch.core.events import Event, EventLog
 from qresearch.core.models import Goal, Hypothesis, PlanStep, ResearchPlan
 from qresearch.core.status import Actor
 from qresearch.dsh_client import DSHClient
-from .prompts import ACTIONS, CRITIC, HYPOTHESIZE, PLAN, UNDERSTAND, actions_text
+from .prompts import ACTIONS, CRITIC, HYPOTHESIZE, PLAN, UNDERSTAND, actions_text, tools_text
 from .schemas import CritiqueOutput, HypothesizeOutput, PlanOutput, UnderstandOutput
 
 
@@ -105,7 +105,7 @@ def make_plan(
         "plan", project_id, PlanOutput,
         PLAN.format(
             version=version, goal=_goal_digest(goal), hypotheses=hypotheses_text,
-            actions=actions_text(), critic_notes=critic_notes or "（无）",
+            actions=actions_text(), tools=tools_text(), critic_notes=critic_notes or "（无）",
             diff_instruction=diff_instruction,
         ),
         retries=retries, event_log=event_log,

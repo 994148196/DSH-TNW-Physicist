@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0 ✅ / Phase 1 ✅ / Phase 2 ✅ 均已完成并通过验收；下一步 Phase 3（Experiment Manager + 种子工具）。
+**一句话状态**：Phase 0 ✅ / Phase 1 ✅ / Phase 2 ✅ / Phase 3 ✅ 均已完成并通过验收；下一步 Phase 4（Verification Manager）。
 
 最后更新：2026-09-13
 
@@ -13,7 +13,7 @@
 | Phase 0 | DSH 可行性（侦察 + SDK 安装 + smoke test） | ✅ 完成 |
 | Phase 1 | Research State：模型 + SQLite + 事件日志 + 恢复 | ✅ 完成 |
 | Phase 2 | Planning 站点（UNDERSTAND/HYPOTHESIZE/PLAN/CRITIC + Decision） | ✅ 完成 |
-| Phase 3 | Experiment Manager + 种子工具（simple_ed、dmrg_adapter） | ⬜ 未开始 |
+| Phase 3 | Experiment Manager + 种子工具（simple_ed、dmrg_adapter） | ✅ 完成 |
 | Phase 4 | Verification Manager（三层基准 + 证据资格门） | ⬜ 未开始 |
 | Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ⬜ 未开始 |
 | Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | ⬜ 未开始 |
@@ -59,6 +59,22 @@
 
 验收标准（计划 v2 §9 Phase 2）：科研问题 → Goal → 假设 → plan v1 → 批准 → Decision 链可追溯。**实测表现**：Goal 含 9 个目标量与 8 条量化成功标准；3 条假设均带数值化证伪判据；critic 对 plan v1 提出实质物理攻击（5 blocker：BA 对照缺约定声明、外推自由度不足、数值分辨率当物理结论、伪像风险、计划引用尚不存在的 dmrg_adapter）；plan v2 逐条修订（14 步 / 17 风险，diff_summary 逐 blocker 对应）；v2 仍被判 revise → 按设计返回交人工裁决，auto-approve 留痕（actor=system）。
 
+## Phase 3 验收清单
+
+- [x] `benchmarks/golden/simple_ed.yaml`——spec 先行：解析值（N=2：-1.5J、gap=2J；N=4：-2J）+ 独立 oracle（稠密对角化）+ Bethe 热力学极限 + 单态/SU(2) 自洽 + 单调收敛，每条检查带 layer 标签与出处
+- [x] `benchmarks/golden/dmrg_vs_simple_ed.yaml`——独立实现差分（L=4,6,8,10，含 gap）
+- [x] `qresearch/tools/registry.py`——工具注册表（注册即带版本/适用范围/基准清单/已知限制，§8.3）
+- [x] `qresearch/tools/simple_ed.py`——Heisenberg 链 ED（PBC、Sz=0 扇区稀疏 Lanczos + Sz=+1 扇区中转算 ⟨S²⟩）
+- [x] `qresearch/tools/dmrg_adapter.py`——quimb DMRG 接入；本机 quimb 1.15 局部本征求解器缺陷（DMRG/DMRG2 均复现）→ 自动回退 MPO 稠密对角化，`method`/`fallback_note` 如实留痕
+- [x] `qresearch/tools/cli.py` + `SubprocessToolRunner`——实验经子进程执行（不经 LLM、崩溃隔离）
+- [x] `qresearch/experiments/manager.py`——execute_step / execute_scan（批量扫描）/ execute_plan（跳过需审批与非实验步骤）/ 复现元数据（seed、code_version、environment）/ `summarize` 摘要表 / 失败也落账
+- [x] `qresearch/verification/golden.py`——golden 检查器（approx / oracle_dense / diff / increasing_toward），Phase 4 的种子
+- [x] PLAN/CRITIC prompt 注入真实工具清单（避免计划引用不存在的工具）
+- [x] `pytest` 全绿：**47 passed**（新增 simple_ed 6 / golden 3 / manager 7 / cli 2）
+- [x] **演示验收**：`phase3_demo.py`——批准的计划 → 自动建 6 个实验（1 基准 + 4 扫描点 + 1 交叉验证）→ 子进程批量跑 → 全部落账（13 条事件）→ 摘要表；golden 16/16 PASS → **PHASE 3 DEMO: PASS**
+
+验收标准（计划 v2 §9 Phase 3）：批准的计划 → 自动建实验 → 批量跑 → 落账 → 实验摘要。**全部达成。**
+
 ## 里程碑日志
 
 ### 2026-09-13（开工日）
@@ -74,9 +90,14 @@
 - **真实 LLM 端到端验收通过**：Heisenberg 问题全流程 ~18 分钟（understand 24s → hypothesize 5min → plan 3min → critic 3min → plan v2 → critic v2 → approve）。critic 给出实质物理审查（含"计划引用尚不存在的工具应降级或删除门控"这类可执行意见）；plan v2 的 diff_summary 逐条对应 blocker。
 - 已知运行特征：deepseek-v4-flash 单站调用 3–5 分钟（长方法论 prompt + JSON Schema），后续阶段若成瓶颈可考虑裁剪 prompt 或换更快的 profile。
 - **架构发现（Phase 3 待办）**：DSH runtime 以 `cwd=项目根` 运行，站内 agent 会自行在仓库写草稿脚本（演示期间产生了 `ed_heis.py`/`corr_heis.py`，已移入 `research_data/demo_phase2/sandbox/` 存档）。Phase 3 Experiment Manager 必须为每个项目建立隔离沙箱目录并把 DSH `cwd` 指向它。
-- 下一步：**Phase 3**——Experiment Manager + 种子工具（simple_ed：scipy 稀疏 Lanczos；dmrg_adapter 桩）+ golden fixtures（出题人≠答题人，spec 先行）。
+- **Phase 3 完成**：spec 先行（golden 基准先于实现定稿，数值全部来自解析/文献/独立实现）→ 工具注册表 + simple_ed + dmrg_adapter → 子进程执行 + 批量扫描 + 复现元数据落账。
+- 测试：**47 passed**。实现期修了三处自己的 bug（COO 构造签名、S⁺ 跃迁需 Sz=+1 中转扇区、关联求和漏除 N）——均被 golden 解析值当场拦截，验证了"出题人≠答题人"机制有效。
+- **quimb 平台缺陷（已记录、已绕过）**：quimb 1.15 的 DMRG/DMRG2 局部本征求解器在本机产生 NaN/Singular matrix（与 NUMBA_DISABLE_JIT 无关）。dmrg_adapter 主路径保留 DMRG2，运行时自动回退 quimb MPO 稠密对角化（仍为独立实现，差分基准 L≤10 一致到 1e-15），`method`/`fallback_note` 字段留痕，缺陷写入 known_limitations。L>14 的 DMRG 需在 quimb 可用的环境运行（Phase 8 HPC 场景）。
+- **演示验收 PASS**：批准计划 → 6 实验自动建立 → 子进程批量执行 → 全部落账 → 摘要表；golden 16/16。
+- 下一步：**Phase 4**——Verification Manager：三层验证（软件/数值/物理）编排、证据资格门（Evidence 必须挂在通过验证的实验上）、VerificationReport 落账。
 
 ## 阻塞 / 待决
 
 - 无阻塞。
 - 已获授权持续开发（无需逐项审批）。
+- **待办：DSH 站内 agent 的写入沙箱**——DSH runtime 以 `cwd=项目根` 运行，站内 agent 会自行在仓库写草稿脚本（Phase 2 演示期间产生了 `ed_heis.py`/`corr_heis.py`，已移入 `research_data/demo_phase2/sandbox/` 存档）。实验层已隔离（`research_data/experiments/<exp_id>/`），但 DSH 站点调用的 `cwd` 仍指向项目根；应在 dsh_client/loop 层为每项目设沙箱目录。

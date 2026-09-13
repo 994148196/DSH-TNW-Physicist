@@ -1,0 +1,77 @@
+# golden 基准：simple_ed（出题人≠答题人，计划 v2 §8.2）
+#
+# 规则：
+# - 本文件的数值来自解析结果 / 文献 / Bethe ansatz，与被测工具的实现无关；
+#   编码 agent 无权修改数值与容差（改基准 = 必须人工审批 + 注明出处）。
+# - layer: software（程序正确性）/ numerical（数值方法）/ physics（物理结论）
+# - oracle 类检查：用独立实现（稠密对角化，不同算法不同基构造）现场对照，
+#   不硬编码实现者自己生成的数值。
+tool: simple_ed
+version: 1
+description: >
+  自旋 1/2 反铁磁 Heisenberg 链，H = J Σ_i S_i·S_{i+1}（PBC，每键计一次；
+  N=2 时单键被计两次，故 E0(N=2) = 2J·(-3/4) = -1.5J）。
+cases:
+  - name: n2_analytic_singlet
+    layer: software
+    inputs: {N: 2, J: 1.0, want_gap: true}
+    checks:
+      - {field: E0, op: approx, value: -1.5, tol: 1.0e-10,
+         source: "解析：N=2 单键双计，单态 S1·S2=-3/4"}
+      - {field: gap, op: approx, value: 2.0, tol: 1.0e-10,
+         source: "解析：三重态 S1·S2=+1/4 → E=+0.5J"}
+      - {field: Sz2, op: approx, value: 0.0, tol: 1.0e-8,
+         source: "基态为自旋单态 <S^2>=0"}
+
+  - name: n4_analytic
+    layer: software
+    inputs: {N: 4, J: 1.0}
+    checks:
+      - {field: E0, op: approx, value: -2.0, tol: 1.0e-10,
+         source: "解析：4 位点环基态 E0=-2J（文献通用结果）"}
+
+  - name: n6_dense_oracle
+    layer: numerical
+    inputs: {N: 6, J: 1.0, want_gap: true}
+    checks:
+      - {field: E0, op: oracle_dense, tol: 1.0e-8,
+         source: "独立实现：2^6 全希尔伯特空间稠密对角化（numpy eigh）"}
+      - {field: gap, op: oracle_dense, tol: 1.0e-6, oracle_field: gap,
+         source: "同上；Lanczos k=2 与稠密谱差分"}
+
+  - name: n10_dense_oracle
+    layer: numerical
+    inputs: {N: 10, J: 1.0}
+    checks:
+      - {field: E0, op: oracle_dense, tol: 1.0e-8,
+         source: "独立实现：2^10 全希尔伯特空间稠密对角化（numpy eigh）"}
+
+  - name: singlet_all_even_n
+    layer: physics
+    inputs: {N: 8, J: 1.0}
+    checks:
+      - {field: Sz2, op: approx, value: 0.0, tol: 1.0e-6,
+         source: "Marshall 符号规则：偶数 N AFM Heisenberg 基态为总自旋单态"}
+
+  - name: nn_corr_consistency
+    layer: physics
+    inputs: {N: 8, J: 1.0, want_corr: true}
+    checks:
+      - {field: nn_corr_times_N, op: approx, value: null, tol: 1.0e-8,
+         op_param_field: E0,
+         source: "E0 = N·J·<S_i·S_{i+1}>（PBC N 键），工具输出必须自洽"}
+
+  - name: thermodynamic_limit_bethe
+    layer: physics
+    inputs: {N: 16, J: 1.0}
+    checks:
+      - {field: e0, op: approx, value: -0.4431471805599453, tol: 5.0e-3,
+         source: "Bethe ansatz：e0 = 1/4 − ln 2 = -0.4431471805599453（Hulthén, 1938）"}
+
+  - name: monotonic_convergence
+    layer: physics
+    sweep: {N: [4, 6, 8, 10, 12]}
+    inputs: {J: 1.0}
+    checks:
+      - {field: e0, op: increasing_toward, value: -0.4431471805599453,
+         source: "e0(N) 随 N 单调递增趋向热力学极限（有限尺寸修正主导项 a/N²>0）"}
