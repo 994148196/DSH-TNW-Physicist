@@ -22,8 +22,6 @@ from qresearch.core.events import EventLog
 from qresearch.core.storage import Storage
 from qresearch.research_loop import run_research_loop
 
-DATA = Path(__file__).resolve().parents[1] / "research_data" / "demo_phase5"
-
 # ---- 离线脚本模型（与 tests/test_research_loop.py 同机制）------------------
 UNDERSTAND_OK = (
     '{"refined_question": "一维自旋 1/2 Heisenberg 链基态能量密度收敛性",'
@@ -85,10 +83,12 @@ def _decide_factory(recommendations: list[str]):
 
 def main() -> int:
     live = "--live" in sys.argv
-    shutil.rmtree(DATA, ignore_errors=True)
-    DATA.mkdir(parents=True, exist_ok=True)
-    storage = Storage(DATA / "state.sqlite")
-    log = EventLog(DATA / "events.jsonl")
+    data = Path(__file__).resolve().parents[1] / "research_data" / (
+        "demo_phase5_live" if live else "demo_phase5")
+    shutil.rmtree(data, ignore_errors=True)
+    data.mkdir(parents=True, exist_ok=True)
+    storage = Storage(data / "state.sqlite")
+    log = EventLog(data / "events.jsonl")
 
     from qresearch.dsh_client import DSHClient
 
@@ -128,10 +128,14 @@ def main() -> int:
     for d_id in summary["decisions"]:
         d = storage.get(Decision, d_id)
         print(f"  [{d.type.value}] {d.recommendation.value} — {(d.rationale or '')[:80]}")
-    print(f"\n事件回放：{DATA / 'events.jsonl'}（{len(log.events(project_id='proj_phase5_demo'))} 条）")
+    print(f"\n事件回放：{data / 'events.jsonl'}（{len(log.events(project_id='proj_phase5_demo'))} 条）")
     print(f"研究报告：{summary['report']}")
 
-    ok = summary["status"] == "terminated" and summary["rounds_used"] == 3
+    if live:
+        # 真实 LLM 的合法结局：3 轮内宣布结论 / 预算耗尽 / 站点重试耗尽转人工——闭环机制本身成立
+        ok = summary["status"] in ("terminated", "budget_exhausted", "needs_human")
+    else:
+        ok = summary["status"] == "terminated" and summary["rounds_used"] == 3
     print(f"\nPHASE 5 DEMO: {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
 

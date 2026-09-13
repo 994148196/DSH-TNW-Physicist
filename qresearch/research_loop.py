@@ -4,6 +4,7 @@
 预算闸：rounds 上限，预算耗尽时代码强制 requires_human（LLM 只提议，代码记账）。
 人工触点：计划审批与终止确认——由 Decision.requires_human 承载。
 全程可回放：所有对象都在 storage/events 里，报告自动生成。
+站点重试耗尽（NeedsHuman）按 §7.0 转人工：落账事件、生成部分报告、返回 needs_human 状态。
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from qresearch.core.events import Event, EventLog
 from qresearch.core.models import Project, ResearchPlan
 from qresearch.core.status import Actor, PlanStatus, VerificationStatus
 from qresearch.core.storage import Storage
-from qresearch.dsh_client import DSHClient
+from qresearch.dsh_client import DSHClient, NeedsHuman
 from qresearch.loop import _interactive_approval, approve_plan
 from .stations.executors import analyze, decide, hypothesize, plan_with_critic, understand
 
@@ -119,21 +120,28 @@ def run_research_loop(
     from qresearch.experiments.manager import ExperimentManager
     from qresearch.verification.manager import VerificationManager
 
+    needs_human: str | None = None
+
     # Round 0：理解 + 假设
     project = Project(project_id=project_id, title=question[:40], question=question)
     storage.save(project)
     event_log.append(Event(actor=Actor.SYSTEM, action="create_project",
                            project_id=project_id, object_type="Project",
                            object_id=project_id, detail={}))
-    goal = understand(client, project_id, question, event_log=event_log, retries=retries)
-    storage.save(goal)
-    event_log.append(Event(actor=Actor.SYSTEM, action="save",
-                           project_id=project_id, object_type="Goal",
-                           object_id=goal.goal_id, detail={}))
-    hypotheses = hypothesize(client, project_id, goal, n=n_hypotheses,
-                             event_log=event_log, retries=retries)
-    for h in hypotheses:
-        storage.save(h)
+    goal = None
+    hypotheses: list = []
+    try:
+        goal = understand(client, project_id, question, event_log=event_log, retries=retries)
+        storage.save(goal)
+        event_log.append(Event(actor=Actor.SYSTEM, action="save",
+                               project_id=project_id, object_type="Goal",
+                               object_id=goal.goal_id, detail={}))
+        hypotheses = hypothesize(client, project_id, goal, n=n_hypotheses,
+                                 event_log=event_log, retries=retries)
+        for h in hypotheses:
+            storage.save(h)
+    except NeedsHuman as e:
+        needs_human = f"Round 0（理解/假设）：{e}"
 
     if experiments_root is None:
         experiments_root = Path(storage.path).parent / "experiments"
@@ -147,82 +155,89 @@ def run_research_loop(
     tool_by_step: dict[str, str] = {}
     terminated = False
 
-    for round_no in range(1, rounds + 1):
-        # ---- PLAN（critic 修订循环）
-        plan, critique = plan_with_critic(
-            client, project_id, goal, hypotheses,
-            previous=previous_plan, decision_id=last_decision_id,
-            event_log=event_log, retries=retries,
-        )
-        plan.status = PlanStatus.AWAITING_APPROVAL
-        storage.save(plan)
-        event_log.append(Event(actor=Actor.SYSTEM, action="plan_ready",
-                               project_id=project_id, object_type="ResearchPlan",
-                               object_id=plan.plan_id,
-                               detail={"version": plan.version, "verdict": critique.verdict,
-                                       "round": round_no}))
-        # ---- 审批（人工触点 1）
-        if auto_approve:
-            approve_plan(storage, event_log, plan, actor=Actor.SYSTEM,
-                         note="auto-approve（演示/测试用，非人工）")
-        else:
-            _interactive_approval(storage, event_log, plan)
-        if plan.status != PlanStatus.APPROVED:
-            return {"status": "plan_rejected", "round": round_no, "plan_id": plan.plan_id}
-
-        for s in plan.steps:
-            for t in s.tools:
-                tool_by_step.setdefault(s.step_id, t)
-
-        # ---- EXECUTE
-        experiments = manager.execute_plan(plan)
-
-        # ---- VERIFY（证据资格门）
-        eligible_ids: set[str] = set()
-        for exp in experiments:
-            tool = tool_by_step.get(exp.step_id)
-            if tool is None:
-                continue
-            report = verifier.verify_experiment(exp, tool)
-            if report.overall == VerificationStatus.PASSED:
-                eligible_ids.add(exp.experiment_id)
-
-        # ---- ANALYZE（只允许引用通过验证的实验）
-        eligible, rows = _experiment_rows(experiments, eligible_ids, tool_by_step)
-        all_rows.extend(rows)
-        analysis, evidence_list = analyze(
-            client, project_id, goal, hypotheses, eligible,
-            event_log=event_log, retries=retries,
-        )
-        for ev in evidence_list:
-            storage.save(ev)
-        all_evidence.extend(evidence_list)
-        all_analyses.append(analysis)
-
-        # ---- DECIDE（人工触点 2：终止/宣布结论都 requires_human）
-        decision = decide(
-            client, project_id, goal, hypotheses, analysis, all_evidence,
-            round_no=round_no, max_rounds=rounds,
-            event_log=event_log, retries=retries,
-        )
-        if round_no == rounds and decision.recommendation.value == "iterate":
-            decision.rationale = (
-                f"[预算闸] 已达 {rounds} 轮上限，iterate 不被自动执行，转人工。原 rationale：{decision.rationale}"
+    try:
+        for round_no in range(1, rounds + 1):
+            # ---- PLAN（critic 修订循环）
+            plan, critique = plan_with_critic(
+                client, project_id, goal, hypotheses,
+                previous=previous_plan, decision_id=last_decision_id,
+                event_log=event_log, retries=retries,
             )
-            decision.requires_human = True
-        storage.save(decision)
-        all_decisions.append(decision)
-        last_decision_id = decision.decision_id
+            plan.status = PlanStatus.AWAITING_APPROVAL
+            storage.save(plan)
+            event_log.append(Event(actor=Actor.SYSTEM, action="plan_ready",
+                                   project_id=project_id, object_type="ResearchPlan",
+                                   object_id=plan.plan_id,
+                                   detail={"version": plan.version, "verdict": critique.verdict,
+                                           "round": round_no}))
+            # ---- 审批（人工触点 1）
+            if auto_approve:
+                approve_plan(storage, event_log, plan, actor=Actor.SYSTEM,
+                             note="auto-approve（演示/测试用，非人工）")
+            else:
+                _interactive_approval(storage, event_log, plan)
+            if plan.status != PlanStatus.APPROVED:
+                return {"status": "plan_rejected", "round": round_no, "plan_id": plan.plan_id}
 
-        if decision.type is DecisionType.DECLARE_RESULT or (
-            decision.type is DecisionType.ITERATE_OR_TERMINATE
-            and decision.recommendation is DecisionRecommendation.TERMINATE
-        ):
-            terminated = True
-            break
-        previous_plan = plan
+            for s in plan.steps:
+                for t in s.tools:
+                    tool_by_step.setdefault(s.step_id, t)
 
-    # ---- 报告生成（全程可回放）
+            # ---- EXECUTE
+            experiments = manager.execute_plan(plan)
+
+            # ---- VERIFY（证据资格门）
+            eligible_ids: set[str] = set()
+            for exp in experiments:
+                tool = tool_by_step.get(exp.step_id)
+                if tool is None:
+                    continue
+                report = verifier.verify_experiment(exp, tool)
+                if report.overall == VerificationStatus.PASSED:
+                    eligible_ids.add(exp.experiment_id)
+
+            # ---- ANALYZE（只允许引用通过验证的实验）
+            eligible, rows = _experiment_rows(experiments, eligible_ids, tool_by_step)
+            all_rows.extend(rows)
+            analysis, evidence_list = analyze(
+                client, project_id, goal, hypotheses, eligible,
+                event_log=event_log, retries=retries,
+            )
+            for ev in evidence_list:
+                storage.save(ev)
+            all_evidence.extend(evidence_list)
+            all_analyses.append(analysis)
+
+            # ---- DECIDE（人工触点 2：终止/宣布结论都 requires_human）
+            decision = decide(
+                client, project_id, goal, hypotheses, analysis, all_evidence,
+                round_no=round_no, max_rounds=rounds,
+                event_log=event_log, retries=retries,
+            )
+            if round_no == rounds and decision.recommendation.value == "iterate":
+                decision.rationale = (
+                    f"[预算闸] 已达 {rounds} 轮上限，iterate 不被自动执行，转人工。"
+                    f"原 rationale：{decision.rationale}"
+                )
+                decision.requires_human = True
+            storage.save(decision)
+            all_decisions.append(decision)
+            last_decision_id = decision.decision_id
+
+            if decision.type is DecisionType.DECLARE_RESULT or (
+                decision.type is DecisionType.ITERATE_OR_TERMINATE
+                and decision.recommendation is DecisionRecommendation.TERMINATE
+            ):
+                terminated = True
+                break
+            previous_plan = plan
+    except NeedsHuman as e:
+        needs_human = f"第 {round_no} 轮：{e}"
+        event_log.append(Event(actor=Actor.SYSTEM, action="needs_human",
+                               project_id=project_id, object_type="Loop",
+                               object_id=project_id, detail={"reason": str(e)}))
+
+    # ---- 报告生成（全程可回放；转人工也生成部分进展报告）
     report_md = generate_report(
         project, goal, hypotheses,
         sorted(storage.list(ResearchPlan, project_id=project_id), key=lambda p: p.version),
@@ -234,10 +249,13 @@ def run_research_loop(
                            project_id=project_id, object_type="Report",
                            object_id=str(report_path),
                            detail={"rounds_used": len(all_decisions)}))
-    return {
-        "status": "terminated" if terminated else "budget_exhausted",
+
+    summary = {
         "rounds_used": len(all_decisions),
         "decisions": [d.decision_id for d in all_decisions],
         "evidence": len(all_evidence),
         "report": str(report_path),
     }
+    if needs_human is not None:
+        return {"status": "needs_human", "reason": needs_human, **summary}
+    return {"status": "terminated" if terminated else "budget_exhausted", **summary}
