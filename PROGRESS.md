@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0–4 ✅ 均已完成并通过验收；下一步 Phase 5（Research Loop 闭环）。
+**一句话状态**：Phase 0–5 ✅ 均已完成并通过验收；下一步 Phase 6（Tool Builder）。
 
 最后更新：2026-09-13
 
@@ -15,8 +15,7 @@
 | Phase 2 | Planning 站点（UNDERSTAND/HYPOTHESIZE/PLAN/CRITIC + Decision） | ✅ 完成 |
 | Phase 3 | Experiment Manager + 种子工具（simple_ed、dmrg_adapter） | ✅ 完成 |
 | Phase 4 | Verification Manager（三层基准 + 证据资格门） | ✅ 完成 |
-| Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ⬜ 未开始 |
-| Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ⬜ 未开始 |
+| Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ✅ 完成 |
 | Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | ⬜ 未开始 |
 | Phase 7 | Research Memory | ⬜ 未开始 |
 | Phase 8 | HPC 与多项目 | ⬜ 未开始 |
@@ -90,6 +89,19 @@
 
 验收标准（计划 v2 §9 Phase 4）：注入一个故意写错的工具能被抓住并出具报告。**达成。**
 
+## Phase 5 验收清单
+
+- [x] `qresearch/research_loop.py`——`run_research_loop` 确定性主循环：Round 0（UNDERSTAND+HYPOTHESIZE）→ 逐轮 PLAN（critic 修订循环，previous + based_on_decision 挂链）→ 审批（人工触点 1）→ EXECUTE → VERIFY（证据资格门）→ ANALYZE → DECIDE（人工触点 2）→ 终止判定 → `report.md` 自动生成
+- [x] `stations/executors.py` 新增 ANALYZE/DECIDE 执行器：五段式分析（observations/interpretations/uncertainties/alternative_explanations/recommended_next_steps），每条主张挂已验证实验 id 并落账为 Evidence；Decision 由 `_REC_MAP` 从 LLM 建议映射（iterate/terminate/replan/declare_result），checklist passed 项必须引用真实 evidence id
+- [x] `dsh_client.call_station` 新增 `validator` 钩子：schema 通过后的语义校验（引用合法性）失败视同校验失败——带错误反馈重试，耗尽抛 `NeedsHuman` 转人工，不再硬崩溃
+- [x] **证据资格门贯通全链**：只有三层验证 PASSED 的实验进入 ANALYZE prompt 且引用合法由代码校验；DECIDE checklist 只能引用已落账 evidence——LLM 全程只提议，资格与记账在代码
+- [x] **预算闸**：rounds 上限耗尽时代码强制 `requires_human` + rationale 加 `[预算闸]` 前缀，iterate 不被自动执行
+- [x] 报告生成：假设/计划/实验表/分析结论（挂实验 id）/决策记录/局限，全部可回溯
+- [x] `pytest` 全绿：**58 passed**（新增 research_loop 3：三轮端到端/预算闸/资格门拒绝）
+- [x] **验收演示**：`phase5_demo.py` 离线脚本模型 3 轮全自动闭环 → status=terminated，决策链 iterate→iterate→declare_result，6 条 Evidence，50 条事件全程可回放 → **PHASE 5 DEMO: PASS**（`--live` 支持真实 LLM 复跑同一流程）
+
+验收标准（计划 v2 §9 Phase 5）：MVP 问题全自动走完 3 轮，人工只批计划与终止，全程可回放。**达成（离线演示机制验证通过；真实 LLM 复跑为可选项）。**
+
 ## 里程碑日志
 
 ### 2026-09-13（开工日）
@@ -111,7 +123,13 @@
 - **演示验收 PASS**：批准计划 → 6 实验自动建立 → 子进程批量执行 → 全部落账 → 摘要表；golden 16/16。
 - **Phase 4 完成**：三层验证编排 + VerificationReport + 证据资格门。验证层当场抓到两个真问题：① simple_ed 用 ARPACK 随机初始向量 → 复跑 ulp 级不可复现（修：固定 v0，Marshall 定理保证与基态有重叠）；② 复现语义校准为物理精度内可重复（1e-10 相对容差），ulp 抖动允许、真实不确定必抓。
 - **验收演示 PASS**：注入偏移 -0.01J 的同名错误实现 → software 层解析值、numerical 层 oracle 差分、physics 层 Bethe 极限/自洽连锁失败 + 复跑不一致 → 报告出具、证据门关闭；正常实验放行。
-- 下一步：**Phase 5**——Research Loop 闭环：ANALYZE 站点（五段式结果分析，每条解读挂 evidence id）+ DECIDE 站点（Decision checklist + 预算闸）+ 报告生成；验收：MVP 问题全自动 3 轮（人工只批计划与终止），全程可回放。
+
+### 2026-09-13（Phase 5）
+- **Phase 5 完成**：`research_loop.run_research_loop` 确定性闭环 + ANALYZE/DECIDE 站点执行器 + Evidence 全链贯通 + 预算闸 + 报告自动生成。
+- 设计要点：① 语义校验（引用合法性）下沉为 `call_station` 的 `validator` 钩子——违规先带错误反馈重试，仍违规则 `NeedsHuman` 转人工，避免 LLM 偶发违规直接炸掉整个闭环；② 预算闸是代码层覆盖（LLM 建议 iterate 而预算耗尽 → 强制 requires_human 并在 rationale 留痕 `[预算闸]`）；③ DECIDE prompt 必须显式列出 evidence id（模型无法引用看不见的 id）。
+- 测试：**58 passed**。三轮端到端测试断言了计划版本递增与 `based_on_decision` 挂链、决策类型序列、evidence 挂真实实验、事件链完整（plan_ready/approve/experiment_started/verify_experiment/analyze/decide 各 3 或 6 次 + report_generated）。
+- **离线验收演示 PASS**：MVP Heisenberg 问题 3 轮全自动 → 决策链 iterate→iterate→declare_result，6 条 Evidence，50 条事件可回放，`research_data/demo_phase5/report.md` 自动生成。
+- 下一步：**Phase 6**——Tool Builder：Spec 先行生成工具缺口实现 + 防串通验证（出题人≠答题人），验收：一个真实工具缺口被自动补齐并通过三层验证。
 
 ## 阻塞 / 待决
 

@@ -7,11 +7,13 @@ from __future__ import annotations
 import json
 
 from qresearch.core.events import Event, EventLog
-from qresearch.core.models import Goal, Hypothesis, PlanStep, ResearchPlan
-from qresearch.core.status import Actor
+from qresearch.core.models import Decision, Evidence, Goal, Hypothesis, PlanStep, ResearchPlan
+from qresearch.core.status import Actor, DecisionRecommendation, DecisionType, EvidenceType
 from qresearch.dsh_client import DSHClient
-from .prompts import ACTIONS, CRITIC, HYPOTHESIZE, PLAN, UNDERSTAND, actions_text, tools_text
-from .schemas import CritiqueOutput, HypothesizeOutput, PlanOutput, UnderstandOutput
+from .prompts import ACTIONS, ANALYZE, CRITIC, DECIDE, HYPOTHESIZE, PLAN, UNDERSTAND, actions_text, tools_text
+from .schemas import (
+    AnalyzeOutput, CritiqueOutput, DecideOutput, HypothesizeOutput, PlanOutput, UnderstandOutput,
+)
 
 
 def _goal_digest(goal: Goal) -> str:
@@ -192,3 +194,170 @@ def plan_with_critic(
         )
     assert critique_out is not None
     return plan, critique_out
+
+
+# ================================================================ ANALYZE
+def _hypotheses_text(hypotheses: list[Hypothesis]) -> str:
+    return "\n".join(
+        f"- {h.statement}（证伪：{'；'.join(h.falsification_tests)}）" for h in hypotheses
+    ) or "（无）"
+
+
+def _eligible_digest(eligible: list[dict]) -> str:
+    exp_lines = []
+    for e in eligible:
+        keys = {k: v for k, v in e["key_results"].items()
+                if isinstance(v, (int, float, str))}
+        exp_lines.append(
+            f"- [{e['experiment_id']}] 步骤 {e['step_id']}，工具 {e['tool']}，输入 {e['inputs']}：{keys}"
+        )
+    return "\n".join(exp_lines) or "（本轮无已通过验证的实验）"
+
+
+def analyze(
+    client: DSHClient,
+    project_id: str,
+    goal: Goal,
+    hypotheses: list[Hypothesis],
+    eligible: list[dict],
+    *,
+    event_log: EventLog | None = None,
+    retries: int = 1,
+) -> tuple[AnalyzeOutput, list[Evidence]]:
+    """ANALYZE 站点：五段式分析。只允许引用已通过验证的实验 id（资格门在代码层）。"""
+    eligible_ids = {e["experiment_id"] for e in eligible}
+
+    def _check_citations(out: AnalyzeOutput) -> None:
+        for section in ("observations", "interpretations"):
+            for c in getattr(out, section):
+                unknown = [i for i in c.experiment_ids if i not in eligible_ids]
+                if unknown:
+                    raise ValueError(
+                        f"证据资格门：analysis 引用了未通过验证的实验 {unknown}；"
+                        f"experiment_ids 只能从以下 id 中选取：{sorted(eligible_ids)}"
+                    )
+
+    out = client.call_station(
+        "analyze", project_id, AnalyzeOutput,
+        ANALYZE.format(goal=_goal_digest(goal),
+                       hypotheses=_hypotheses_text(hypotheses),
+                       eligible_experiments=_eligible_digest(eligible)),
+        retries=retries, event_log=event_log, validator=_check_citations,
+    )
+    evidence: list[Evidence] = []
+    for c in out.observations:
+        for exp_id in c.experiment_ids:
+            evidence.append(Evidence(
+                project_id=project_id, type=EvidenceType.NUMERICAL,
+                claim=c.claim, source_experiment=exp_id,
+            ))
+    for c in out.interpretations:
+        for exp_id in c.experiment_ids:
+            evidence.append(Evidence(
+                project_id=project_id, type=EvidenceType.CONSISTENCY_CHECK,
+                claim=c.claim, source_experiment=exp_id,
+            ))
+    if event_log is not None:
+        event_log.append(Event(
+            actor=Actor.MODEL, action="analyze", project_id=project_id,
+            object_type="Analysis", object_id=project_id,
+            detail={
+                "n_observations": len(out.observations),
+                "n_interpretations": len(out.interpretations),
+                "n_evidence": len(evidence),
+                "uncertainties": out.uncertainties,
+            },
+        ))
+    return out, evidence
+
+
+# ================================================================ DECIDE
+_REC_MAP = {
+    # (DecisionType, DecisionRecommendation)
+    "iterate": (DecisionType.ITERATE_OR_TERMINATE, DecisionRecommendation.ITERATE),
+    "terminate": (DecisionType.ITERATE_OR_TERMINATE, DecisionRecommendation.TERMINATE),
+    "replan": (DecisionType.REPLAN, DecisionRecommendation.REPLAN),
+    "declare_result": (DecisionType.DECLARE_RESULT, DecisionRecommendation.ACCEPT),
+}
+
+
+def _hypothesis_digest(hypotheses: list[Hypothesis]) -> str:
+    lines = [f"- {h.statement}" for h in hypotheses]
+    return "\n".join(lines) or "（无）"
+
+
+def decide(
+    client: DSHClient,
+    project_id: str,
+    goal: Goal,
+    hypotheses: list[Hypothesis],
+    analysis: AnalyzeOutput,
+    evidence: list[Evidence],
+    *,
+    round_no: int,
+    max_rounds: int,
+    event_log: EventLog | None = None,
+    retries: int = 1,
+) -> Decision:
+    """DECIDE 站点：LLM 提议决策建议，代码校验 checklist 并落账。"""
+    budget_text = (
+        f"第 {round_no} 轮 / 预算上限 {max_rounds} 轮；"
+        + ("尚有剩余预算" if round_no < max_rounds else "预算已耗尽：不得建议继续大规模实验")
+    )
+    evidence_text = "\n".join(
+        f"- [{ev.evidence_id}] {ev.claim}（实验 {ev.source_experiment}）"
+        for ev in evidence
+    ) or "（无）"
+    def _check_evidence(o: DecideOutput) -> None:
+        valid = {ev.evidence_id for ev in evidence}
+        for item in o.checklist:
+            if item.status == "passed" and item.evidence not in valid:
+                raise ValueError(
+                    f"checklist passed 项引用了不存在的 evidence {item.evidence!r}；"
+                    f"只能引用以下 evidence id：{sorted(valid)}"
+                )
+
+    out = client.call_station(
+        "decide", project_id, DecideOutput,
+        DECIDE.format(
+            goal=_goal_digest(goal),
+            hypotheses=_hypothesis_digest(hypotheses),
+            analysis=(
+                f"观察：{[c.claim for c in analysis.observations]}；"
+                f"解读：{[c.claim for c in analysis.interpretations]}；"
+                f"不确定：{analysis.uncertainties}；"
+                f"替代解释：{analysis.alternative_explanations}；"
+                f"建议下一步：{analysis.recommended_next_steps}"
+            ),
+            evidence=evidence_text,
+            budget=budget_text,
+        ),
+        retries=retries, event_log=event_log, validator=_check_evidence,
+    )
+    from qresearch.core.models import CheckItem
+
+    decision = Decision(
+        project_id=project_id,
+        type=_REC_MAP[out.recommendation][0],
+        recommendation=_REC_MAP[out.recommendation][1],
+        checklist=[
+            CheckItem(claim=i.claim, status=i.status, evidence=i.evidence, reason=i.reason)
+            for i in out.checklist
+        ],
+        info_gain_estimate=out.info_gain_estimate,
+        alternatives_considered=out.alternatives_considered,
+        rationale=out.rationale,
+        made_by=Actor.MODEL,
+        requires_human=True,  # Phase 5 默认全人工确认；自动化放开是后续按类授权
+    )
+    if event_log is not None:
+        event_log.append(Event(
+            actor=Actor.MODEL, action="decide", project_id=project_id,
+            object_type="Decision", object_id=decision.decision_id,
+            detail={
+                "recommendation": out.recommendation, "round": round_no,
+                "checklist": [i.model_dump() for i in decision.checklist],
+                "rationale": out.rationale,
+            },
+        ))
+    return decision

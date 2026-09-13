@@ -64,6 +64,11 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
+    @property
+    def path(self) -> Path:
+        """SQLite 文件路径（供报告/产物定位同目录）。"""
+        return self._path
+
     def _init_schema(self) -> None:
         for _cls, table, _id_field in _SPECS:
             self._conn.execute(

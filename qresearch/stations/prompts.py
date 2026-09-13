@@ -88,3 +88,47 @@ CRITIC = """你是苛刻的物理 Plan Critic。攻击以下研究计划，重�
 
 计划：
 {plan}"""
+
+ANALYZE = """你是量子多体物理的结果分析员。基于本轮"已通过三层验证"的实验结果，
+输出五段分析（observations / interpretations / uncertainties /
+alternative_explanations / recommended_next_steps）。
+
+研究目标：
+{goal}
+
+候选假设：
+{hypotheses}
+
+本轮可引用的实验（ ONLY 这些 id 可以出现在 experiment_ids 里；
+未列出的实验未通过验证，引用即违规）：
+{eligible_experiments}
+
+规则：
+- 每条 observation / interpretation 必须挂至少一个实验 id；
+- 禁止把未验证的趋势表述为物理结论（如外推未收敛、单尺寸结果）；
+- uncertainties 不得为空：明确说出当前结果的局限；
+- recommended_next_steps 要具体可执行（下一轮做什么实验、为什么）。"""
+
+DECIDE = """你是研究方向的决策者。基于分析结果、假设状态与剩余预算，
+对"下一步怎么走"给出建议（recommendation）并附 checklist。
+
+研究目标：
+{goal}
+
+候选假设（含当前证据状态）：
+{hypotheses}
+
+分析摘要：
+{analysis}
+
+本证据库（checklist 的 passed 项只能引用这些 evidence id）：
+{evidence}
+
+预算状态：
+{budget}
+
+规则：
+- recommendation ∈ iterate（继续按当前路线做下一轮）/ terminate（路线判死，停）/ replan（换方案重来）/ declare_result（宣布结论）；
+- checklist 每项写明判断依据；status=passed 的项必须引用 evidence id（只能引用分析给出的 evidence id）；
+- declare_result 意味着对外宣布物理结论，需要最高标准：所有关键 checklist 项 passed 且挂 evidence；
+- 预算耗尽时不得建议继续大规模实验；信息增益低时优先 terminate 或 replan。"""

@@ -119,8 +119,14 @@ class DSHClient:
         prompt: str,
         retries: int = 1,
         event_log: EventLog | None = None,
+        validator: Callable[[T], None] | None = None,
     ) -> T:
-        """执行一次站点轮次：prompt + schema 约束 → Pydantic 校验，失败带错误重试。"""
+        """执行一次站点轮次：prompt + schema 约束 → Pydantic 校验 → 可选语义校验。
+
+        失败带错误反馈重试；耗尽抛 NeedsHuman（转人工）。
+        `validator`：schema 通过后的领域校验（如"引用的实验必须通过验证"），
+        抛 ValueError 视同校验失败。
+        """
         base = prompt + SCHEMA_INSTRUCTION.format(schema=schema.model_json_schema())
         full = base
         last_text = ""
@@ -130,6 +136,8 @@ class DSHClient:
             last_text = self._run(full, session_id)
             try:
                 out = schema.model_validate_json(extract_json(last_text))
+                if validator is not None:
+                    validator(out)
             except (ValueError, ValidationError) as e:
                 last_err = e
                 full = base + _RETRY_INSTRUCTION.format(error=e)
