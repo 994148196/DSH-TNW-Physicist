@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# 科研运行时数据：状态库要备份，大产物不入库
+research_data/experiments/
+research_data/artifacts/
+research_data/dsh_home/
+
+# 环境与密钥
+.env
+*.local.yaml
+
+# OS
+Thumbs.db
+.DS_Store
