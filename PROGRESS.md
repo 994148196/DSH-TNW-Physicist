@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0–5 ✅ 均已完成并通过验收；下一步 Phase 6（Tool Builder）。
+**一句话状态**：Phase 0–5 ✅ 已完成；Phase 6 🔄（Tool Builder 机制完成 + 离线演示 PASS，live 构建验收进行中）。
 
 最后更新：2026-09-13
 
@@ -16,7 +16,7 @@
 | Phase 3 | Experiment Manager + 种子工具（simple_ed、dmrg_adapter） | ✅ 完成 |
 | Phase 4 | Verification Manager（三层基准 + 证据资格门） | ✅ 完成 |
 | Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ✅ 完成 |
-| Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | ⬜ 未开始 |
+| Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | 🔄 进行中 |
 | Phase 7 | Research Memory | ⬜ 未开始 |
 | Phase 8 | HPC 与多项目 | ⬜ 未开始 |
 
@@ -102,6 +102,19 @@
 
 验收标准（计划 v2 §9 Phase 5）：MVP 问题全自动走完 3 轮，人工只批计划与终止，全程可回放。**达成（离线演示机制验证通过；真实 LLM 复跑为可选项）。**
 
+## Phase 6 验收清单（进行中）
+
+- [x] `tool_specs/tfim_ed.yaml`——真实缺口的 Tool Spec（横场 Ising 链 ED；出题侧先于实现定稿，DSH 无 fixtures/容差修改路径）
+- [x] `tool_specs/tfim_ed.golden.yaml`——golden 定值：h=0 偶 N 精确 E0=-NJ 与两重简并 gap=0（解析）、临界 e0(∞)=-4J/π（Lieb-Schultz-Mattis 1961，N=12 容差 1e-2）、独立稠密 oracle 对照（E0+gap，tol 1e-8）、单调收敛；锚点全部经独立稠密对角化预校验
+- [x] `qresearch/verification/golden.py`——`dense_tfim_ground` 独立 oracle（bit-flip 稠密构造，与被测工具无共享代码路径）；oracle_dense 检查支持 oracle 选择；`run_benchmark(tool_override=)` 支持构建期候选名
+- [x] `qresearch/tool_builder/`——build_tool 全流程：DSH 编码（隔离 workspace，编码 prompt 不含任何基准数值）→ golden 自动跑（失败回喂修复，上限 3）→ 三层验证 → 批评者审 diff vs Spec → 构建报告 → 审批 → 注册正式名 + fixtures 安装 + ToolRecord 落账
+- [x] `registry.register(replace=)`/`unregister`：候选覆写与清理（受控词汇保护不变：正式名重复注册仍报错）
+- [x] `dsh_client.run_agent`：开放轮次（无 schema 的文件交付任务，调用方在文件层验收）
+- [x] `pytest` 全绿：**66 passed**（新增 tool_builder 3：修复循环 / 耗尽不注册 / 编码 prompt 无基准值泄漏）
+- [x] **离线演示 PASS**：`phase6_demo.py`——注入横场偏移 0.01 的带错首版 → golden 解析锚点当场抓住 → 回喂修复 → 三层验证 passed → 批评者 pass → 注册 → 研究闭环接入实验验证 PASSED（证据资格门放行）
+- [ ] **live 构建验收**：真实 DSH 编码 tfim_ed（人工审查 diff 报告后晋升）
+- [ ] 晋升：通过审查的实现复制入 `qresearch/tools/tfim_ed.py` + `load_seed_tools` 注册 + fixtures 入 `benchmarks/golden/`（晋升后子进程模式可用；fixtures 随晋升提交）
+
 ## 里程碑日志
 
 ### 2026-09-13（开工日）
@@ -130,6 +143,15 @@
 - 测试：**58 passed**。三轮端到端测试断言了计划版本递增与 `based_on_decision` 挂链、决策类型序列、evidence 挂真实实验、事件链完整（plan_ready/approve/experiment_started/verify_experiment/analyze/decide 各 3 或 6 次 + report_generated）。
 - **离线验收演示 PASS**：MVP Heisenberg 问题 3 轮全自动 → 决策链 iterate→iterate→declare_result，6 条 Evidence，50 条事件可回放，`research_data/demo_phase5/report.md` 自动生成。
 - 下一步：**Phase 6**——Tool Builder：Spec 先行生成工具缺口实现 + 防串通验证（出题人≠答题人），验收：一个真实工具缺口被自动补齐并通过三层验证。
+
+### 2026-09-13（Phase 5 live 验收 + Phase 6 机制）
+- **Phase 5 live 验收暴露并修复三个真实闭环缺陷**（离线脚本模型覆盖不到的真实 LLM 行为）：
+  1. LLM 把动作名当工具名填入 plan（tools: ["run_experiment"]）→ execute_step KeyError 炸闭环。修：make_plan 语义校验（validator 钩子：tools 只能引用注册工具 + 可执行动作恰好 1 工具，违规重试耗尽转人工）+ execute_step 未知工具按 FAILED 落账。
+  2. DSH session 持久化于 dsh_home，重跑同 project_id → JsonRpcError "session already exists"。修：演示 project_id 加时间戳 + finally 关闭 runtime（遗留孤儿 node 进程教训）。
+  3. parameter_scan 子实验 step_id 带 _idx 后缀 → tool_by_step 精确匹配落空 → 18 个实验全部跳过验证、eligible 为空 → ANALYZE 引用 "none" 被资格门拒绝（资格门本身工作正常）。修：_tool_for 沿父步骤回溯 + ANALYZE prompt 明确空数组规则。
+- **Phase 5 live 状态**：新鲁棒性（needs_human 优雅落账 + 部分报告）在真实运行中得到验证；修复后 live 复跑进行中。
+- **Phase 6 机制完成**：见上方 Phase 6 验收清单。防串通设计：编码 prompt 零基准数值（测试断言）、fixtures/容差出题侧锁定、批评者审 diff、审批后注册。测试 66 passed。
+- 已知物理陷阱（测试设计教训）：不能用 +J"反铁磁"当 TFIM 的破坏实现——偶数双分环上与铁磁谱完全等价（规范变换），golden 会放行；破坏实现改用横场偏移。
 
 ## 阻塞 / 待决
 
