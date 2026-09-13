@@ -1,0 +1,50 @@
+# golden 基准：tfim_ed（spec 先行——本文件先于工具实现定稿，出题人≠答题人）
+#
+# 约定：H = -J Σ_i σ^x_i σ^x_{i+1 mod N} - h Σ_i σ^z_i（泡利矩阵，PBC 单计数）
+# 数值来源：
+#   - 解析：h=0 偶 N 铁磁基态 E0=-NJ，两重简并 gap=0
+#   - 文献：临界点 e0(∞) = -4J/π ≈ -1.2732395447351627（Lieb-Schultz-Mattis, 1961）
+#   - 独立实现：dense_tfim_ground（全 2^N 希尔伯特空间稠密对角化，见 verification/golden.py）
+# 工具注册前由 Tool Builder 以 tool_override 运行本文件；注册后安装到 benchmarks/golden/。
+tool: tfim_ed
+cases:
+  - name: h0_ferromagnetic_exact_N4
+    layer: software
+    inputs: {N: 4, J: 1.0, h: 0.0, want_gap: true}
+    checks:
+      - {op: approx, field: E0, value: -4.0, tol: 1.0e-10}
+      - {op: approx, field: gap, value: 0.0, tol: 1.0e-6}
+
+  - name: h0_ferromagnetic_exact_N8
+    layer: software
+    inputs: {N: 8, J: 1.0, h: 0.0, want_gap: true}
+    checks:
+      - {op: approx, field: E0, value: -8.0, tol: 1.0e-10}
+
+  - name: residual_check
+    layer: numerical
+    inputs: {N: 8, J: 1.0, h: 1.0, want_gap: false}
+    checks:
+      - {op: approx, field: residual, value: 0.0, tol: 1.0e-8}
+
+  - name: critical_thermodynamic_limit
+    layer: physics
+    inputs: {N: 12, J: 1.0, h: 1.0, want_gap: false}
+    checks:
+      # 出处：Lieb-Schultz-Mattis (1961)；e0(∞) = -4J/π；有限尺寸修正 O(1/N²)
+      - {op: approx, field: e0, value: -1.2732395447351627, tol: 1.0e-2}
+
+  - name: oracle_dense_small
+    layer: physics
+    inputs: {J: 1.0, want_gap: true}
+    sweep: {N: [4, 6], h: [0.5, 1.0, 2.0]}
+    checks:
+      - {op: oracle_dense, oracle: tfim, field: E0, tol: 1.0e-8}
+      - {op: oracle_dense, oracle: tfim, field: gap, oracle_field: gap, tol: 1.0e-8}
+
+  - name: monotonic_convergence_critical
+    layer: physics
+    inputs: {J: 1.0, h: 1.0, want_gap: false}
+    sweep: {N: [4, 6, 8, 10, 12]}
+    checks:
+      - {op: increasing_toward, field: e0, value: -1.2732395447351627}

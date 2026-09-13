@@ -129,7 +129,8 @@ def make_plan(
             if s.action == "parameter_scan" and not isinstance(s.inputs.get("scan"), dict):
                 raise ValueError(
                     f"步骤（{s.purpose}）声明 parameter_scan 但缺 inputs.scan；"
-                    "scan 应为 {参数名: [取值列表]}，其余标量参数平铺在 inputs 里"
+                    "若该步只做一次计算，请把动作改为 run_experiment（inputs 平铺）；"
+                    "若确为参数扫描，scan 应为 {参数名: [取值列表]}，标量参数平铺"
                 )
 
     out = client.call_station(

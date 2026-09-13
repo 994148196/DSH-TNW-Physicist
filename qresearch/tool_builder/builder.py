@@ -225,7 +225,7 @@ def build_tool(
             benchmark_refs=[Path(spec.fixtures_ref).name],
             known_limitations=list(spec.known_limitations),
         )
-        register(final_spec)  # 正式名重复注册会抛错（受控词汇保护）
+        register(final_spec, replace=True)  # 允许覆盖同名 seed/旧版本（重建升级路径）
         unregister(candidate_name)
         if spec.fixtures_install_to:
             install_to = ROOT / spec.fixtures_install_to

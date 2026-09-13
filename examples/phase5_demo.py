@@ -124,6 +124,7 @@ def main() -> int:
             client, storage, log, project_id,
             "一维自旋 1/2 反铁磁 Heisenberg 链基态能量密度与 Bethe ansatz 对照研究",
             rounds=3, auto_approve=True,
+            retries=2 if live else 1,  # live 给模型更多校验反馈重试机会
         )
     finally:
         client.close()  # 结束 runtime 子进程（含异常路径）

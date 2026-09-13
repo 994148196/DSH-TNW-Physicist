@@ -73,3 +73,4 @@ def load_seed_tools() -> None:
     """导入种子工具模块，触发注册（幂等：import 只执行一次）。"""
     from . import simple_ed  # noqa: F401  注册 simple_ed
     from . import dmrg_adapter  # noqa: F401  注册 dmrg_adapter
+    from . import tfim_ed  # noqa: F401  注册 tfim_ed（Phase 6 构建晋升）

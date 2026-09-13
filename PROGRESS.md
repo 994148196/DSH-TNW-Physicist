@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0–5 ✅ 已完成；Phase 6 🔄（Tool Builder 机制完成 + 离线演示 PASS，live 构建验收进行中）。
+**一句话状态**：Phase 0–5 ✅ 已完成；Phase 6 🔄（Tool Builder 机制 + live 构建验收 + 晋升完成，收尾中）。
 
 最后更新：2026-09-13
 
@@ -16,7 +16,7 @@
 | Phase 3 | Experiment Manager + 种子工具（simple_ed、dmrg_adapter） | ✅ 完成 |
 | Phase 4 | Verification Manager（三层基准 + 证据资格门） | ✅ 完成 |
 | Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ✅ 完成 |
-| Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | 🔄 进行中 |
+| Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | ✅ 完成（live 验收 + 晋升） |
 | Phase 7 | Research Memory | ⬜ 未开始 |
 | Phase 8 | HPC 与多项目 | ⬜ 未开始 |
 
@@ -110,10 +110,10 @@
 - [x] `qresearch/tool_builder/`——build_tool 全流程：DSH 编码（隔离 workspace，编码 prompt 不含任何基准数值）→ golden 自动跑（失败回喂修复，上限 3）→ 三层验证 → 批评者审 diff vs Spec → 构建报告 → 审批 → 注册正式名 + fixtures 安装 + ToolRecord 落账
 - [x] `registry.register(replace=)`/`unregister`：候选覆写与清理（受控词汇保护不变：正式名重复注册仍报错）
 - [x] `dsh_client.run_agent`：开放轮次（无 schema 的文件交付任务，调用方在文件层验收）
-- [x] `pytest` 全绿：**66 passed**（新增 tool_builder 3：修复循环 / 耗尽不注册 / 编码 prompt 无基准值泄漏）
+- [x] `pytest` 全绿：**70 passed**（新增 tool_builder 4：修复循环 / 耗尽不注册 / 编码 prompt 无基准值泄漏 / client_factory 每轮独立工作目录；晋升后含 tfim_ed golden 主套件）
 - [x] **离线演示 PASS**：`phase6_demo.py`——注入横场偏移 0.01 的带错首版 → golden 解析锚点当场抓住 → 回喂修复 → 三层验证 passed → 批评者 pass → 注册 → 研究闭环接入实验验证 PASSED（证据资格门放行）
-- [ ] **live 构建验收**：真实 DSH 编码 tfim_ed（人工审查 diff 报告后晋升）
-- [ ] 晋升：通过审查的实现复制入 `qresearch/tools/tfim_ed.py` + `load_seed_tools` 注册 + fixtures 入 `benchmarks/golden/`（晋升后子进程模式可用；fixtures 随晋升提交）
+- [x] **live 构建验收 PASS**：真实 DSH（deepseek-v4-flash）编码 tfim_ed——**首轮即通过全部 8 项 golden**（含 h=0 精确锚点、临界 -4J/π、独立稠密 oracle、单调收敛），三层验证 passed；批评者给出实质审查（1 concern：gap 归零阈值 1e-11 会吞掉 N≥18 有序相的指数小能隙——实测 N=20,h=0.3 真实 gap 8.56e-12 被报为 0；2 minor：docstring 夸大自检、与 Spec 无关的元评论），无 blocker；构建报告出具（`research_data/demo_phase6/builds/tfim_ed/build_report.md`），auto-approve 留痕（actor=system，演示）
+- [x] **晋升完成**：交付代码原样复制入 `qresearch/tools/tfim_ed.py`（仅追加 seed 注册块，保持 diff-vs-Spec 可追溯）+ `load_seed_tools` 注册 + fixtures `benchmarks/golden/tfim_ed.yaml` 随晋升提交（与出题侧定稿逐字节一致）。人工审查（代行）结论：① 构建者正确反驳了 Spec 初版的错误表述——铁磁 TFIM 在 h=0 无奇 N 受挫（键算符对易且可同时取 -1，全对齐态 E0=-NJ 任意 N 成立），受挫的是 J<0 反铁磁（奇 N 环 E0=-|J|(N-2)），出题侧采纳并修订 `tool_specs/tfim_ed.yaml`；② critic 的 gap 归零 concern 作为已知限制接受（golden 覆盖域之外、docstring 已如实声明）。晋升暴露并修复一处真实缺陷：`build_tool` 正式注册不容忍同名 seed/旧版本 → `register(replace=True)`（重建升级路径）。晋升后子进程模式可用，注册表 = simple_ed + dmrg_adapter + tfim_ed
 
 ## 里程碑日志
 
@@ -152,6 +152,13 @@
 - **Phase 5 live 状态**：新鲁棒性（needs_human 优雅落账 + 部分报告）在真实运行中得到验证；修复后 live 复跑进行中。
 - **Phase 6 机制完成**：见上方 Phase 6 验收清单。防串通设计：编码 prompt 零基准数值（测试断言）、fixtures/容差出题侧锁定、批评者审 diff、审批后注册。测试 66 passed。
 - 已知物理陷阱（测试设计教训）：不能用 +J"反铁磁"当 TFIM 的破坏实现——偶数双分环上与铁磁谱完全等价（规范变换），golden 会放行；破坏实现改用横场偏移。
+
+### 2026-09-13（Phase 6 live 验收 + 晋升）
+- **live 构建一次通过**：DSH 编码站（cwd=workspace 隔离 + client_factory 每轮独立 runtime）在 attempt_1 交付 394 行 Lanczos/稠密双后端实现 + selftest.py（独立 Kronecker oracle + 显式"无基准常数"声明——防串通指令落地），golden 8/8 首轮全过，三层验证 passed。批评者给出高质量物理审查：定位了 gap 归零阈值与 Spec 定义的真实冲突并用独立 ncv=200 参考值实测（8.56e-12 vs 8.57e-12）——concern 而非 blocker，登记为已知限制。
+- **构建者反驳出题侧并获得采纳**：Spec 初版"奇 N h=0 铁磁受挫"是错的（受挫的是 J<0 反铁磁）。构建者用全枚举验证 + 解析论证反驳——正是 Spec 期望的行为（发现 Spec 错误时如实声明而非迎合）。
+- **晋升完成**：交付代码逐字节保留（仅追加注册块），fixtures 与出题侧定稿 diff 一致后入库，`build_tool` 注册路径修为 `replace=True`（同名 seed/旧版本重建升级）。测试 **70 passed**（golden 主套件现含 tfim_ed 全部 8 项检查）。
+- **P5 live 复跑继续**：plan 校验反馈再加固（动作选择指引：run_experiment=单点 / parameter_scan=网格必须带 inputs.scan；错误信息给出替代动作）、live 重试上限提到 2——待复跑验证。
+- 下一步：**Phase 7**——Research Memory（验收：新项目能检索复用旧项目经验）。
 
 ## 阻塞 / 待决
 
