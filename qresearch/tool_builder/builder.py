@@ -73,7 +73,13 @@ def build_tool(
     max_repair_rounds: int = 3,
     auto_approve: bool = False,
     builds_root: str | Path | None = None,
+    client_factory: "Callable[[Path], DSHClient] | None" = None,
 ) -> BuildResult:
+    """client_factory：live 编码用——每轮 attempt 以 cwd=workspace 新建 runtime，
+    保证 agent 的工作目录就是交付目录（对单 client 依赖 prompt 里的绝对路径不可靠：
+    Windows 反斜杠路径易被误读为相对路径）。离线脚本测试用注入 client 即可。"""
+    from typing import Callable
+
     from .spec import ToolBuildSpec
 
     spec = ToolBuildSpec.load(spec_path)
@@ -112,8 +118,15 @@ def build_tool(
             prompt += TOOL_BUILD_REPAIR.format(
                 failures="\n".join(f"  - {f}" for f in failures)
             )
-        prompt = prompt.replace("（每轮尝试的独立目录，见会话分配）", str(workspace))
-        client.run_agent(prompt, session_id=f"{project_id}:build:a{attempt_no - 1}")
+        prompt = prompt.replace("（每轮尝试的独立目录，见会话分配）", workspace.as_posix())
+        if client_factory is not None:
+            build_client = client_factory(workspace)
+            try:
+                build_client.run_agent(prompt, session_id=f"{project_id}:build:a{attempt_no - 1}")
+            finally:
+                build_client.close()
+        else:
+            client.run_agent(prompt, session_id=f"{project_id}:build:a{attempt_no - 1}")
 
         module_path = workspace / "tool_module.py"
         try:

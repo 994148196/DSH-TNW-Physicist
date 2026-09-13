@@ -102,11 +102,15 @@ def main() -> int:
         sandbox.mkdir(parents=True, exist_ok=True)
         from qresearch.dsh_client import DSHClient
 
-        client = DSHClient(
-            cwd=sandbox, dsh_home=DATA / "dsh_home",  # 独立 home：不与其他运行争用会话存储
-        )  # 草稿写沙箱；交付写 prompt 里的工作目录
+        # critic 站用主 client；编码站每轮 attempt 以 cwd=workspace 新建 runtime
+        # （交付必然落在工作目录），dsh_home 独立避免与其他运行争用
+        client = DSHClient(cwd=sandbox, dsh_home=DATA / "dsh_home")
+
+        def client_factory(workspace: Path) -> DSHClient:
+            return DSHClient(cwd=workspace, dsh_home=DATA / "dsh_home")
     else:
         client = _offline_client()
+        client_factory = None
 
     from qresearch.tool_builder import build_tool
 
@@ -121,6 +125,7 @@ def main() -> int:
             client, storage, log, ROOT / "tool_specs" / "tfim_ed.yaml",
             auto_approve=True,  # 演示用；真实流程为人工审批（actor 留痕）
             builds_root=DATA / "builds",
+            client_factory=client_factory,
         )
     finally:
         client.close()

@@ -165,3 +165,30 @@ def test_build_prompt_contains_no_fixture_values(tmp_path, db, make_scripted_cli
     finally:
         unregister("tfim_ed")
         unregister("candidate_tfim_ed")
+
+
+def test_build_client_factory_per_attempt(tmp_path, db, make_scripted_client):
+    """client_factory：每轮 attempt 以独立 client（cwd=workspace）编码，交付必落工作目录。"""
+    from qresearch.tool_builder import build_tool
+
+    spec_path = _spec_in_tmp(tmp_path)
+    calls: list[Path] = []
+
+    def factory(workspace: Path):
+        calls.append(workspace)
+        return make_scripted_client({"build": [_writer([GOOD_MODULE], [])]})
+
+    client = make_scripted_client({"tool_critic": CRITIC_PASS})
+    try:
+        result = build_tool(
+            client, db, EventLog(tmp_path / "e3.jsonl"), spec_path,
+            builds_root=tmp_path / "builds", auto_approve=True,
+            client_factory=factory,
+        )
+        assert result.status == "registered"
+        assert result.attempts == 1
+        assert len(calls) == 1
+        assert (calls[0] / "tool_module.py").exists()
+    finally:
+        unregister("tfim_ed")
+        unregister("candidate_tfim_ed")
