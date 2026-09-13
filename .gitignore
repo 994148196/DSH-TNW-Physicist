@@ -22,3 +22,5 @@ research_data/dsh_home/
 # OS
 Thumbs.db
 .DS_Store
+.dsh-runtime/
+research_data/demo/

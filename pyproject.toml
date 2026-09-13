@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qresearch"
+version = "0.1.0"
+description = "Quantum many-body research agent layer driven over DeepSeek Harness (DSH)"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["qresearch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
