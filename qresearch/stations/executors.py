@@ -122,7 +122,8 @@ def make_plan(
             if s.action in RUNNABLE_ACTIONS and len(s.tools) != 1:
                 raise ValueError(
                     f"步骤（{s.purpose}）动作 {s.action} 必须恰好引用 1 个注册工具"
-                    f"（实际 {len(s.tools)}）"
+                    f"（实际 {len(s.tools)}）；如需两工具交叉验证，请拆成两个并行步骤"
+                    f"（各引用一个工具、相同输入），对比在分析阶段进行"
                 )
             # 扫描步骤必须声明 inputs.scan = {参数名: [取值...]}
             if s.action == "parameter_scan" and not isinstance(s.inputs.get("scan"), dict):
