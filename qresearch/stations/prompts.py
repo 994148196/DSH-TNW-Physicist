@@ -17,12 +17,28 @@ def actions_text() -> str:
 
 
 def tools_text() -> str:
-    """已注册工具清单（PLAN/CRITIC 引用现实，避免计划引用不存在的工具）。"""
-    from qresearch.tools.registry import load_seed_tools, tool_names
+    """已注册工具清单及输入 schema（PLAN/CRITIC 引用现实：模型必须知道每个工具的
+    字段契约才能写出可执行的 inputs；只给名字会诱发自造 schema）。"""
+    from qresearch.tools.registry import get_tool, load_seed_tools, tool_names
 
     load_seed_tools()
     names = tool_names()
-    return "、".join(names) if names else "（无——只能使用解析/对照类步骤）"
+    if not names:
+        return "（无——只能使用解析/对照类步骤）"
+    lines = []
+    for n in names:
+        spec = get_tool(n)
+        schema = spec.input_model.model_json_schema()
+        required = set(schema.get("required", []))
+        props = schema.get("properties", {})
+        fields = ", ".join(
+            f"{k}:{prop.get('type', 'object')}"
+            + ("" if k in required else "（可选）")
+            for k, prop in props.items()
+        )
+        desc = spec.description.split("。")[0][:50]
+        lines.append(f"- {n}（{desc}）：inputs 字段 {fields or '（无）'}")
+    return "\n".join(lines)
 
 
 UNDERSTAND = """你是量子多体物理研究的规划助手。请把用户的科研问题翻译成结构化研究目标。
@@ -58,7 +74,9 @@ PLAN = """为以下研究目标制定研究计划（第 {version} 版）。
 可用动作词汇表：
 {actions}
 
-已注册工具（steps.tools 只能引用这些；tools 填工具名，不能填动作名或自造名字）：{tools}
+已注册工具与输入契约（steps.tools 只能引用这些名字；tools 填工具名，
+不能填动作名或自造名字；inputs 必须严格按对应工具的字段与类型书写）：
+{tools}
 
 上一轮批评意见：
 {critic_notes}
@@ -78,10 +96,13 @@ CRITIC = """你是苛刻的物理 Plan Critic。攻击以下研究计划，重�
 - 步骤引用的工具是否存在于动作词汇表、输入是否自洽。
 
 结论分两级：verdict=pass（可交人审批）或 revise（必须修订）。
-任何"缺对照、缺收敛性检查"都是 blocker。
+任何"缺对照、缺收敛性检查"都是 blocker；inputs 与工具输入契约不符也是 blocker。
 
 可用动作词汇表：
 {actions}
+
+已注册工具与输入契约：
+{tools}
 
 研究目标：
 {goal}

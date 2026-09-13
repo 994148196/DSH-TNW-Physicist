@@ -124,6 +124,12 @@ def make_plan(
                     f"步骤（{s.purpose}）动作 {s.action} 必须恰好引用 1 个注册工具"
                     f"（实际 {len(s.tools)}）"
                 )
+            # 扫描步骤必须声明 inputs.scan = {参数名: [取值...]}
+            if s.action == "parameter_scan" and not isinstance(s.inputs.get("scan"), dict):
+                raise ValueError(
+                    f"步骤（{s.purpose}）声明 parameter_scan 但缺 inputs.scan；"
+                    "scan 应为 {参数名: [取值列表]}，其余标量参数平铺在 inputs 里"
+                )
 
     out = client.call_station(
         "plan", project_id, PlanOutput,
@@ -161,7 +167,8 @@ def critique(
 ) -> CritiqueOutput:
     out = client.call_station(
         "critic", project_id, CritiqueOutput,
-        CRITIC.format(goal=_goal_digest(goal), plan=_plan_digest(plan), actions=actions_text()),
+        CRITIC.format(goal=_goal_digest(goal), plan=_plan_digest(plan),
+                      actions=actions_text(), tools=tools_text()),
         retries=retries, event_log=event_log,
     )
     if event_log is not None:

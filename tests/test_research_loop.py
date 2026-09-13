@@ -181,3 +181,23 @@ def test_scan_children_verified(tmp_path, make_scripted_client):
     evidences = storage.list(Evidence, project_id="proj_scan")
     assert evidences
     assert all(e.source_experiment.startswith("exp_") for e in evidences)
+
+
+def test_scan_without_scan_key_recorded_not_crash(tmp_path, make_scripted_client):
+    """parameter_scan 缺 inputs.scan：规划期校验会拦（重试转人工），
+    执行期兜底按 FAILED 落账而不是 ValueError 炸闭环（live 教训）。"""
+    from qresearch.experiments.manager import ExperimentManager
+    from qresearch.core.models import PlanStep, ResearchPlan
+
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    mgr = ExperimentManager(storage, log, experiments_root=tmp_path / "ex")
+    plan = ResearchPlan(
+        project_id="p", goal_id="g", version=1,
+        steps=[PlanStep(step_id="s1", action="parameter_scan", purpose="x",
+                        tools=["simple_ed"], inputs={"N": [4, 6]}, expected_outputs=[])],
+        risks=[], diff_summary=None,
+    )
+    exps = mgr.execute_scan(plan, plan.steps[0])
+    assert len(exps) == 1 and exps[0].status.value == "failed"
+    assert "inputs.scan" in (exps[0].error or "")

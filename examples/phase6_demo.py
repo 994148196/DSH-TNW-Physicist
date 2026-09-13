@@ -102,7 +102,9 @@ def main() -> int:
         sandbox.mkdir(parents=True, exist_ok=True)
         from qresearch.dsh_client import DSHClient
 
-        client = DSHClient(cwd=sandbox)  # 草稿写沙箱；交付写 prompt 里的工作目录
+        client = DSHClient(
+            cwd=sandbox, dsh_home=DATA / "dsh_home",  # 独立 home：不与其他运行争用会话存储
+        )  # 草稿写沙箱；交付写 prompt 里的工作目录
     else:
         client = _offline_client()
 

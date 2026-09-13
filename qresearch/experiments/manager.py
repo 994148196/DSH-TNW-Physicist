@@ -179,7 +179,8 @@ class ExperimentManager:
         inputs = dict(step.inputs)
         scan = inputs.pop("scan", None)
         if not isinstance(scan, dict) or not scan:
-            raise ValueError(f"步骤 {step.step_id} 声明 parameter_scan 但缺 inputs.scan")
+            # 缺 scan 声明：按失败落账，不炸闭环（计划 v2 §7.0）
+            return [self._record_invalid_step(plan, step, "声明 parameter_scan 但缺 inputs.scan")]
         keys = sorted(scan)
         combos = _product_grid([scan[k] for k in keys])
         experiments: list[Experiment] = []
@@ -192,6 +193,21 @@ class ExperimentManager:
             scan_step = step.model_copy(update={"inputs": point, "step_id": f"{step.step_id}_{idx}"})
             experiments.append(self.execute_step(plan, scan_step))
         return experiments
+
+    def _record_invalid_step(self, plan: ResearchPlan, step: PlanStep, why: str) -> Experiment:
+        from qresearch.core.status import ExperimentStatus
+
+        experiment = Experiment(
+            project_id=plan.project_id, plan_id=plan.plan_id, step_id=step.step_id,
+            tool_id=step.tools[0] if step.tools else "", parameters=dict(step.inputs),
+            status=ExperimentStatus.FAILED, seed=0, code_version=__version__,
+            environment=self._environment(), error=f"ValueError: {why}",
+            finished_at=_now(),
+        )
+        self.storage.save(experiment)
+        self._event("experiment_finished", experiment,
+                    detail_extra={"status": "failed", "elapsed_s": 0.0})
+        return experiment
 
     # ---- 整计划
     def execute_plan(

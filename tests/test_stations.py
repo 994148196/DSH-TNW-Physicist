@@ -120,3 +120,30 @@ def test_make_plan_requires_tool_for_runnable_action(make_scripted_client):
     client = make_scripted_client({"plan": PLAN_NO_TOOL})
     with pytest.raises(NeedsHuman, match="恰好引用 1 个"):
         make_plan(client, "p1", _goal(), [], retries=0)
+
+
+def test_plan_prompt_contains_tool_schema(make_scripted_client):
+    """PLAN prompt 必须包含工具输入契约——只给工具名会诱发 LLM 自造 schema（live 教训）。"""
+    captured = {}
+
+    def plan_resp(prompt: str, session_id: str) -> str:
+        captured["plan"] = prompt
+        return PLAN_OK
+
+    client = make_scripted_client({"plan": plan_resp})
+    make_plan(client, "p1", _goal(), [])
+    assert "simple_ed" in captured["plan"]
+    assert "N:integer" in captured["plan"]
+
+
+PLAN_SCAN_NO_KEY = (
+    '{"steps": [{"action": "parameter_scan", "purpose": "p1", "tools": ["simple_ed"],'
+    ' "inputs": {"N": [4, 6]}, "expected_outputs": ["o"]}], "risks": [], "diff_summary": null}'
+)
+
+
+def test_make_plan_requires_scan_key(make_scripted_client):
+    """parameter_scan 步骤缺 inputs.scan → 规划期语义校验拒绝（重试耗尽转人工）。"""
+    client = make_scripted_client({"plan": PLAN_SCAN_NO_KEY})
+    with pytest.raises(NeedsHuman, match="inputs.scan"):
+        make_plan(client, "p1", _goal(), [], retries=0)
