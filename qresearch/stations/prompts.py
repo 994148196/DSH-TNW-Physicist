@@ -58,7 +58,7 @@ PLAN = """为以下研究目标制定研究计划（第 {version} 版）。
 可用动作词汇表：
 {actions}
 
-已注册工具（steps.tools 只能引用这些）：{tools}
+已注册工具（steps.tools 只能引用这些；tools 填工具名，不能填动作名或自造名字）：{tools}
 
 上一轮批评意见：
 {critic_notes}

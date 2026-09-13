@@ -73,13 +73,16 @@ def test_execute_plan_skips_approval_and_non_runnable(mgr):
     assert [e.step_id for e in exps_all] == ["s1", "s2"]
 
 
-def test_unknown_tool_rejected(mgr):
+def test_unknown_tool_recorded_as_failure(mgr):
+    """未知工具不炸闭环：按 FAILED 实验落账（计划 v2 §7.0）。"""
     plan = _plan("p1", [PlanStep(
         step_id="s1", action="run_experiment", purpose="x",
         tools=["not_a_tool"], inputs={},
     )])
-    with pytest.raises(KeyError, match="未注册的工具"):
-        mgr.execute_step(plan, plan.steps[0])
+    exp = mgr.execute_step(plan, plan.steps[0])
+    assert exp.status.value == "failed"
+    assert "未注册" in (exp.error or "")
+    assert exp.tool_id == "not_a_tool"
 
 
 def test_tool_failure_recorded(mgr):

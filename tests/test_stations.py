@@ -94,3 +94,29 @@ def test_critique_logged_as_event(tmp_path, make_scripted_client):
     events = log.events(project_id="p1")
     assert events[-1].action == "critique"
     assert events[-1].detail["issues"][0]["severity"] == "blocker"
+
+
+PLAN_BAD_TOOL = (
+    '{"steps": [{"action": "run_experiment", "purpose": "p1", "tools": ["run_experiment"],'
+    ' "inputs": {"N": 4}, "expected_outputs": ["o"]}], "risks": [], "diff_summary": null}'
+)
+
+
+def test_make_plan_rejects_unregistered_tool(make_scripted_client):
+    """plan 语义校验：tools 引用未注册名（如把动作名当工具名）→ 重试耗尽转人工。"""
+    client = make_scripted_client({"plan": PLAN_BAD_TOOL})
+    with pytest.raises(NeedsHuman, match="未注册"):
+        make_plan(client, "p1", _goal(), [], retries=0)
+
+
+PLAN_NO_TOOL = (
+    '{"steps": [{"action": "run_experiment", "purpose": "p1", "tools": [],'
+    ' "inputs": {"N": 4}, "expected_outputs": ["o"]}], "risks": [], "diff_summary": null}'
+)
+
+
+def test_make_plan_requires_tool_for_runnable_action(make_scripted_client):
+    """可执行实验动作必须恰好引用 1 个注册工具，否则重试耗尽转人工。"""
+    client = make_scripted_client({"plan": PLAN_NO_TOOL})
+    with pytest.raises(NeedsHuman, match="恰好引用 1 个"):
+        make_plan(client, "p1", _goal(), [], retries=0)

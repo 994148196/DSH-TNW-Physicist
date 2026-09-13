@@ -116,16 +116,29 @@ class ExperimentManager:
             raise ValueError(
                 f"步骤 {step.step_id} 必须恰好引用 1 个工具（实际 {len(step.tools)}）"
             )
-        spec = get_tool(step.tools[0])
-        record = self._ensure_tool_record(spec)
 
         experiment = Experiment(
             project_id=plan.project_id, plan_id=plan.plan_id, step_id=step.step_id,
-            tool_id=record.tool_id, parameters=dict(step.inputs),
+            tool_id="", parameters=dict(step.inputs),
             status=ExperimentStatus.RUNNING, seed=0,
             code_version=__version__,
             environment=self._environment(),
         )
+        # 未知工具按失败落账，不炸闭环（计划 v2 §7.0：失败也要落账）
+        try:
+            spec = get_tool(step.tools[0])
+        except KeyError as exc:
+            experiment.status = ExperimentStatus.FAILED
+            experiment.tool_id = step.tools[0]
+            experiment.error = f"{type(exc).__name__}: {exc}"
+            experiment.finished_at = _now()
+            self.storage.save(experiment)
+            self._event("experiment_finished", experiment,
+                        detail_extra={"status": "failed", "elapsed_s": 0.0})
+            return experiment
+        record = self._ensure_tool_record(spec)
+        experiment.tool_id = record.tool_id
+
         self.storage.save(experiment)
         self._event("experiment_started", experiment)
 

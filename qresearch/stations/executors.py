@@ -103,6 +103,28 @@ def make_plan(
             f"\n这是对 v{previous.version} 的修订。当前上一版计划：\n{_plan_digest(previous)}"
             f"\ndiff_summary 必须概述与上一版的差异（改了哪些步骤、为什么）。"
         )
+    from qresearch.experiments.manager import RUNNABLE_ACTIONS
+    from qresearch.tools.registry import load_seed_tools, tool_names as registered_tools
+
+    load_seed_tools()
+    known_tools = set(registered_tools())
+
+    def _check_tools(out: PlanOutput) -> None:
+        for s in out.steps:
+            # tools 字段填的是注册工具名，不是动作名
+            unknown = [t for t in s.tools if t not in known_tools]
+            if unknown:
+                raise ValueError(
+                    f"步骤（{s.purpose}）的 tools {unknown} 未注册；"
+                    f"tools 只能从注册工具清单中选择：{sorted(known_tools)}"
+                )
+            # 可执行实验动作必须恰好引用 1 个注册工具
+            if s.action in RUNNABLE_ACTIONS and len(s.tools) != 1:
+                raise ValueError(
+                    f"步骤（{s.purpose}）动作 {s.action} 必须恰好引用 1 个注册工具"
+                    f"（实际 {len(s.tools)}）"
+                )
+
     out = client.call_station(
         "plan", project_id, PlanOutput,
         PLAN.format(
@@ -110,7 +132,7 @@ def make_plan(
             actions=actions_text(), tools=tools_text(), critic_notes=critic_notes or "（无）",
             diff_instruction=diff_instruction,
         ),
-        retries=retries, event_log=event_log,
+        retries=retries, event_log=event_log, validator=_check_tools,
     )
     steps = [
         PlanStep(
