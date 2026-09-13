@@ -61,6 +61,6 @@ def test_tfim_fixture_spec_first():
     assert raw["tool"] == "tfim_ed"
     known_ops = {"approx", "oracle_dense", "diff", "increasing_toward"}
     for case in raw["cases"]:
-        assert case["layer"] in ("numerical", "physics")
+        assert case["layer"] in ("software", "numerical", "physics")
         for check in case["checks"]:
             assert check["op"] in known_ops

@@ -9,17 +9,23 @@
 tool: tfim_ed
 cases:
   - name: h0_ferromagnetic_exact_N4
-    layer: numerical
+    layer: software
     inputs: {N: 4, J: 1.0, h: 0.0, want_gap: true}
     checks:
       - {op: approx, field: E0, value: -4.0, tol: 1.0e-10}
       - {op: approx, field: gap, value: 0.0, tol: 1.0e-6}
 
   - name: h0_ferromagnetic_exact_N8
-    layer: numerical
+    layer: software
     inputs: {N: 8, J: 1.0, h: 0.0, want_gap: true}
     checks:
       - {op: approx, field: E0, value: -8.0, tol: 1.0e-10}
+
+  - name: residual_check
+    layer: numerical
+    inputs: {N: 8, J: 1.0, h: 1.0, want_gap: false}
+    checks:
+      - {op: approx, field: residual, value: 0.0, tol: 1.0e-8}
 
   - name: critical_thermodynamic_limit
     layer: physics

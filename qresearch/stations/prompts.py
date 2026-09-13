@@ -105,6 +105,8 @@ alternative_explanations / recommended_next_steps）。
 
 规则：
 - 每条 observation / interpretation 必须挂至少一个实验 id；
+- 若可引用实验区为"（本轮无已通过验证的实验）"，experiment_ids 必须输出空数组 []，
+  严禁填写 "none" 或任何占位符，并把"本轮无通过验证的实验"写入 uncertainties；
 - 禁止把未验证的趋势表述为物理结论（如外推未收敛、单尺寸结果）；
 - uncertainties 不得为空：明确说出当前结果的局限；
 - recommended_next_steps 要具体可执行（下一轮做什么实验、为什么）。"""
@@ -132,3 +134,80 @@ DECIDE = """你是研究方向的决策者。基于分析结果、假设状态�
 - checklist 每项写明判断依据；status=passed 的项必须引用 evidence id（只能引用分析给出的 evidence id）；
 - declare_result 意味着对外宣布物理结论，需要最高标准：所有关键 checklist 项 passed 且挂 evidence；
 - 预算耗尽时不得建议继续大规模实验；信息增益低时优先 terminate 或 replan。"""
+
+
+# ================================================================ TOOL BUILDER（Phase 6）
+TOOL_BUILD = """你是 qresearch 系统的工具构建站。任务：在当前工作目录实现一个数值计算工具模块。
+
+工具名（最终名，本次交付为候选实现）：{tool_name} v{version}
+用途：{purpose}
+
+物理与数学约定（必须严格遵守，含单位与边界条件）：
+{convention}
+
+输入字段（run 收到 dict，内部必须先做校验）：
+{inputs_text}
+
+输出字段（run 返回 dict，全部为 Python 原生类型，可 json.dumps）：
+{outputs_text}
+
+不变量（实现必须满足，违反任何一条即不合格）：
+{invariants}
+
+已知限制（如实声明，不要掩盖）：
+{limitations}
+
+交付契约：
+- 本次构建的工作目录：{workspace}
+- 唯一交付文件：tool_module.py（必须写在工作目录）；
+- 必须定义 Inputs（pydantic BaseModel，含全部输入字段与取值校验）与 run(inputs: dict) -> dict；
+- run 先 Inputs(**inputs) 校验再计算；数值用 numpy/scipy；
+- 输出含 residual 字段：|H ψ0 - E0 ψ0| 的数值估计（用实现自身可计算的方式给出）；
+- 你可以在工作目录内写草稿/自测脚本并运行验证，但最终以 tool_module.py 为准；
+- 禁止猜测或硬编码任何基准数值：正确性来自物理推导与自洽检验，不来自对答案。"""
+
+TOOL_BUILD_REPAIR = """
+
+你上一版实现未通过基准自检，失败项如下：
+{failures}
+
+请修复 tool_module.py（可整体重写），保持同一交付契约。"""
+
+TOOL_CRITIC = """你是工具交付的批评者。审查候选实现是否忠实于 Tool Spec，防止偷工减料与作弊。
+
+Tool Spec 摘要：
+{spec_digest}
+
+候选实现代码（tool_module.py 全文）：
+```python
+{code}
+```
+
+审查点：
+1) 输入/输出字段与不变量是否全部实现；物理约定（公式、单位、边界条件）是否正确；
+2) 是否有硬编码的可疑数值（对照答案作弊的痕迹）；
+3) 数值方法选择是否合理（收敛性、精度、适用范围）；
+4) 与已知物理极限的兼容性（对称性、守恒量、极限行为）。"""
+
+REPORT = """工具构建报告：{tool_name}
+
+- 用途：{purpose}
+- 状态：{status}（尝试 {attempts} 轮）
+- 候选名：{candidate_name}（正式注册名：{registered_name}）
+
+## golden 基准（各轮）
+{golden_section}
+
+## 三层验证
+{verification_section}
+
+## 批评者审查
+{critic_section}
+
+## 已知限制
+{limitations}
+
+## 防串通说明
+fixtures 与容差在编码开始前已锁定（出题人=人+解析/文献/独立 oracle）；
+编码站 prompt 不包含任何基准数值。完整隔离需沙箱文件系统（Phase 8）。
+"""

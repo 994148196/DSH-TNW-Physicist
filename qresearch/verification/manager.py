@@ -61,22 +61,38 @@ class VerificationManager:
         load_seed_tools()
 
     # ---------------------------------------------------------- 工具级验证
-    def tool_check_results(self, tool_name: str) -> list[CheckResult]:
-        """跑该工具的全部 golden 基准，返回逐检查结果（带 layer）。"""
+    def tool_check_results(
+        self, tool_name: str, *, extra_benchmarks: list[str | Path] | None = None
+    ) -> list[CheckResult]:
+        """跑该工具的全部 golden 基准，返回逐检查结果（带 layer）。
+
+        extra_benchmarks：显式基准文件（Tool Builder 构建期，fixture 尚未安装到
+        benchmarks/golden/ 时由 spec.fixtures_ref 提供）。
+        """
         results: list[CheckResult] = []
-        for path in sorted(self.golden_dir.glob("*.yaml")):
+        paths = sorted(self.golden_dir.glob("*.yaml"))
+        for path in paths:
             import yaml
 
             raw = yaml.safe_load(path.read_text(encoding="utf-8"))
             if raw.get("tool") != tool_name:
                 continue
-            report = run_benchmark(path)
+            report = run_benchmark(path, tool_override=tool_name)
+            results.extend(report.results)
+        # 显式传入的基准：调用方已声明归属该工具（构建期候选名 ≠ 文件内正式名），不过滤
+        for path in (extra_benchmarks or []):
+            path = Path(path)
+            if not path.exists():
+                continue
+            report = run_benchmark(path, tool_override=tool_name)
             results.extend(report.results)
         return results
 
-    def verify_tool(self, tool_name: str) -> list[VerificationReportItem]:
+    def verify_tool(
+        self, tool_name: str, *, extra_benchmarks: list[str | Path] | None = None
+    ) -> list[VerificationReportItem]:
         """工具三层基准 → 逐层 VerificationReportItem（验收 Phase 6 也复用）。"""
-        results = self.tool_check_results(tool_name)
+        results = self.tool_check_results(tool_name, extra_benchmarks=extra_benchmarks)
         if not results:
             return [VerificationReportItem(
                 claim=f"工具 {tool_name} 无 golden 基准",

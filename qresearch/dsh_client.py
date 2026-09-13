@@ -111,6 +111,14 @@ class DSHClient:
     def __exit__(self, *_exc) -> None:
         self.close()
 
+    def run_agent(self, prompt: str, session_id: str) -> str:
+        """开放轮次：无 JSON Schema 约束的 agent 任务（如 Tool Builder 编码站）。
+
+        与 call_station 的区别：不校验、不重试——交付物是文件而非结构化输出，
+        由调用方在文件层面验收。
+        """
+        return self._run(prompt, session_id)
+
     def call_station(
         self,
         station: str,

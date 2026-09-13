@@ -41,9 +41,12 @@ class ToolSpec:
 _REGISTRY: dict[str, ToolSpec] = {}
 
 
-def register(spec: ToolSpec) -> ToolSpec:
-    """登记工具；重复注册视为错误（工具集是受控词汇，不许静默覆盖）。"""
-    if spec.name in _REGISTRY:
+def register(spec: ToolSpec, *, replace: bool = False) -> ToolSpec:
+    """登记工具；默认重复注册视为错误（工具集是受控词汇，不许静默覆盖）。
+
+    replace=True 仅限两处：Tool Builder 覆写同名候选实现、正式注册前清理候选名。
+    """
+    if spec.name in _REGISTRY and not replace:
         raise ValueError(f"工具重复注册: {spec.name}")
     _REGISTRY[spec.name] = spec
     return spec
@@ -55,6 +58,11 @@ def get_tool(name: str) -> ToolSpec:
             f"未注册的工具: {name}（可用: {', '.join(sorted(_REGISTRY)) or '无'}）"
         )
     return _REGISTRY[name]
+
+
+def unregister(name: str) -> None:
+    """移除注册（Tool Builder 注册正式名后清理候选名用；其余场景禁用）。"""
+    _REGISTRY.pop(name, None)
 
 
 def tool_names() -> list[str]:

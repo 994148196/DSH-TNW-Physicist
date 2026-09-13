@@ -78,8 +78,11 @@ def generate_report(
 
 # ================================================================ 主循环
 def _experiment_rows(experiments: list, eligible_ids: set[str],
-                     tool_by_step: dict[str, str]) -> tuple[list[dict], list[dict]]:
-    """实验分为"可引用（验证通过）"与"全部"（计划 v2 §7.6 证据资格门）。"""
+                     tool_for) -> tuple[list[dict], list[dict]]:
+    """实验分为"可引用（验证通过）"与"全部"（计划 v2 §7.6 证据资格门）。
+
+    tool_for：step_id → 工具名（含 parameter_scan 子实验的父步骤回溯）。
+    """
     from qresearch.experiments.manager import _load_result
 
     eligible, all_rows = [], []
@@ -87,7 +90,7 @@ def _experiment_rows(experiments: list, eligible_ids: set[str],
         result = _load_result(exp) or {}
         row = {
             "experiment_id": exp.experiment_id, "step_id": exp.step_id,
-            "tool": tool_by_step.get(exp.step_id, "?"), "inputs": exp.parameters,
+            "tool": tool_for(exp.step_id) or "?", "inputs": exp.parameters,
             "key_results": {
                 k: result.get(k)
                 for k in ("E0", "e0", "gap", "Sz2", "method") if k in result
@@ -183,13 +186,24 @@ def run_research_loop(
                 for t in s.tools:
                     tool_by_step.setdefault(s.step_id, t)
 
+            def _tool_for(step_id: str) -> str | None:
+                if step_id in tool_by_step:
+                    return tool_by_step[step_id]
+                # parameter_scan 子实验的 step_id 为 "<step_id>_<idx>"：回溯父步骤
+                base = step_id
+                while "_" in base:
+                    base = base.rsplit("_", 1)[0]
+                    if base in tool_by_step:
+                        return tool_by_step[base]
+                return None
+
             # ---- EXECUTE
             experiments = manager.execute_plan(plan)
 
             # ---- VERIFY（证据资格门）
             eligible_ids: set[str] = set()
             for exp in experiments:
-                tool = tool_by_step.get(exp.step_id)
+                tool = _tool_for(exp.step_id)
                 if tool is None:
                     continue
                 report = verifier.verify_experiment(exp, tool)
@@ -197,7 +211,7 @@ def run_research_loop(
                     eligible_ids.add(exp.experiment_id)
 
             # ---- ANALYZE（只允许引用通过验证的实验）
-            eligible, rows = _experiment_rows(experiments, eligible_ids, tool_by_step)
+            eligible, rows = _experiment_rows(experiments, eligible_ids, _tool_for)
             all_rows.extend(rows)
             analysis, evidence_list = analyze(
                 client, project_id, goal, hypotheses, eligible,

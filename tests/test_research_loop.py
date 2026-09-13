@@ -152,3 +152,32 @@ def test_analyze_rejects_unverified_experiment(tmp_path, make_scripted_client):
     goal = Goal(project_id="p", question="q", success_criteria=["s"])
     with pytest.raises(NeedsHuman, match="证据资格门"):
         analyze(client, "p", goal, [], [], retries=0)
+
+
+PLAN_SCAN = (
+    '{"steps": ['
+    '{"action": "parameter_scan", "purpose": "尺寸扫描", "tools": ["simple_ed"],'
+    ' "inputs": {"scan": {"N": [4, 6]}, "J": 1.0}, "expected_outputs": ["E0"]}],'
+    ' "risks": [], "diff_summary": null}'
+)
+
+
+def test_scan_children_verified(tmp_path, make_scripted_client):
+    """parameter_scan 子实验（step_id 带 _idx 后缀）必须进入验证与资格门。"""
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    client = make_scripted_client({
+        "understand": UNDERSTAND_OK, "hypothesize": HYP_OK,
+        "plan": PLAN_SCAN, "critic": CRITIC_PASS,
+        "analyze": _analysis_response,
+        "decide": _decide_factory(["declare_result"]),
+    })
+    summary = run_research_loop(client, storage, log, "proj_scan",
+                                "Heisenberg 链尺寸扫描", rounds=1, auto_approve=True)
+    assert summary["status"] == "terminated"
+    actions = [e.action for e in log.events(project_id="proj_scan")]
+    assert actions.count("experiment_started") == 2
+    assert actions.count("verify_experiment") == 2
+    evidences = storage.list(Evidence, project_id="proj_scan")
+    assert evidences
+    assert all(e.source_experiment.startswith("exp_") for e in evidences)
