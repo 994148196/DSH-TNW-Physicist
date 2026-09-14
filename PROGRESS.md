@@ -207,5 +207,8 @@
 ## 阻塞 / 待决
 
 - 无阻塞。
+
+### 2026-09-14（文档化）
+- **README + 双文档完成**：`README.md`（入口索引 + 功能总览）；`docs/user_guide.md`（使用者指南：安装、快速上手、四个真实案例——Heisenberg live 研究 / tfim_ed 构建 / 跨项目记忆 / 运维操作——读懂输出、FAQ）；`docs/manual.md`（技术手册：架构、五条铁律、13 个台账对象、六站点、三层验证、证据资格门、Tool Builder 防串通、研究记忆、HPC/编排、配置、设计权衡备忘）。
 - 已获授权持续开发（无需逐项审批）。
 - **待办：DSH 站内 agent 的写入沙箱**——DSH runtime 以 `cwd=项目根` 运行，站内 agent 会自行在仓库写草稿脚本（Phase 2 演示期间产生了 `ed_heis.py`/`corr_heis.py`，已移入 `research_data/demo_phase2/sandbox/` 存档）。实验层已隔离（`research_data/experiments/<exp_id>/`），但 DSH 站点调用的 `cwd` 仍指向项目根；应在 dsh_client/loop 层为每项目设沙箱目录。
