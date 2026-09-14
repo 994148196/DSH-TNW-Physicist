@@ -282,6 +282,14 @@ DMRG 建议换集群（Slurm 后端）。
 DSH session 持久化在 dsh_home。换 project_id，或复用 `resume_research_loop`
 从台账续跑（推荐，状态不丢）。
 
+**Q：项目可以建在仓库目录之外吗？**
+可以。所有路径都是显式参数：`Storage`/`EventLog`/`DSHClient(cwd=, dsh_home=)`/
+`experiments_root`/`MemoryStore` 想放哪就放哪（`run_projects` 的 `data_root`
+同理），报告自动生成在 `state.sqlite` 旁边。仓库里强绑定的只有代码与 DSH
+runtime 二进制（按包位置解析，与数据位置无关）。注意**定好位置再跑**：实验
+产物在台账里记绝对路径，跑完再挪目录会导致产物路径失效；DSH session 也按
+沙箱绝对路径归档。
+
 **Q：怎么加一个新工具？**
 先写 Spec + golden（`tool_specs/`，数值来自解析/文献/独立实现），要么手写后
 按 ToolSpec 注册，要么走 §5 的构建流程。工具被 golden 覆盖后才能产出 passed 证据。
