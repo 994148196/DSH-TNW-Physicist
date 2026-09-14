@@ -9,7 +9,8 @@ agent 会误判失败并重跑，台账出现重复实验（D4）。
 台账事件由 job 内部执行的引擎方法照常落账，不因异步化而改变。
 
 取消（D4/M3）：pending 直接取消；running 置 cancel_requested 并如实上报，
-实验级协作式取消在 M3（P11）落地——M1 不谎报"已取消"。
+实验级协作式取消在 M3 落地（experiments_run 的 cancel_check 检查点：
+取消后不再新建实验账目，已建账的照常完成）——不谎报"已取消"。
 """
 from __future__ import annotations
 
@@ -91,6 +92,19 @@ class JobManager:
             return {"job_id": j.job_id, "state": j.state,
                     "note": "job 未完成：请继续 job_status 轮询"}
         return {"job_id": j.job_id, "state": j.state, "result": j.result, "error": j.error}
+
+    # -------------------------------------------------- 协作式取消（M3）
+    def cancel_requested(self, job_id: str) -> bool:
+        """长任务在检查点轮询此方法（实验级协作式取消：只停"未开工"的）。"""
+        return self._get(job_id).cancel_requested
+
+    def find_active(self, key: str) -> str | None:
+        """按幂等键找活跃 job 的 id（找不到返回 None）。"""
+        with self._lock:
+            for job in self._jobs.values():
+                if job.key == key and job.state in _ACTIVE:
+                    return job.job_id
+        return None
 
     # -------------------------------------------------- 取消与进度
     def cancel(self, job_id: str) -> bool:

@@ -316,3 +316,33 @@ def test_adhoc_discipline_via_mcp(ctx):
     assert "未关联注册工具" in engine.job_result(job["job_id"])["error"]
     # 未验证 adhoc 不产生任何证据
     assert m.ledger_query(project_id="proj", kind="evidence")["items"] == []
+
+
+# ================================================================ M3 plan_show markdown
+def test_plan_show_markdown_card(ctx):
+    """M3：plan_show 的 markdown 字段给 Web 渲染——标题/目标/步骤表/critic/blocker。"""
+    engine = _install(ctx)
+    engine.open_project("proj", "Heisenberg 链基态研究")
+    plan = _save_plan(engine)
+
+    # 无 critic 事件：基础卡片，无 blocker 节、无编辑提示（edit_hint=False）
+    out = m.plan_show(project_id="proj", plan_id=plan.plan_id)
+    md = out["markdown"]
+    assert "# 研究计划 v1" in md and "Heisenberg 链基态研究" in md
+    assert "## 步骤（1 步）" in md and "### s1 [run_experiment] 基准" in md
+    assert "simple_ed" in md and "critic" not in md
+    assert out["n_blockers"] == 0
+
+    # 追加 plan_ready 事件（verdict=block）：critic 节与 blocker 计数出现
+    from qresearch.core.events import Event
+    engine.event_log.append(Event(
+        actor=Actor.SYSTEM, action="plan_ready", project_id="proj",
+        object_type="ResearchPlan", object_id=plan.plan_id,
+        detail={"verdict": "block",
+                "issues": [{"severity": "blocker", "description": "缺对照组"}]}))
+    out = m.plan_show(project_id="proj", plan_id=plan.plan_id)
+    assert out["critic_verdict"] == "block" and out["n_blockers"] == 1
+    assert "## critic 审查结论：block" in out["markdown"]
+    assert "缺对照组" in out["markdown"]
+    # 编辑提示只属于 plan_doc 渲染入口，MCP 卡片不带（Web 端不显示修改说明）
+    assert "两种用法" not in out["markdown"]

@@ -44,6 +44,21 @@ research_open → understand → hypothesize → plan_create → plan_show
 `plan_approve` 不写批准——它只查台账。人的批复事件（actor=HUMAN）出现后它才会
 返回 approved=true。**不要试图绕过**：没有 TTY 的进程批不了。
 
+## 节点汇报模板（M3：每个交互点固定使用，不要自由发挥）
+
+每个里程碑（计划出稿、job 完成、每轮收尾）向研究者汇报时，用这个模板渲染
+`research_status` / `job_status` 的结构化字段：
+
+```
+【里程碑汇报】
+- 轮次：R<rounds_used>（上限 <max_rounds，未定则写"未定">）
+- 实验：本轮 完成 X / 失败 Y；累计 <experiments.total> 个（工具：…）
+- 证据：累计 <eligible_experiments>/<experiments.total> 通过验证，Evidence N 条
+- 决策建议：<decisions[-1].recommendation 或 "无">
+  （requires_human=true 时必须注明："等你确认——qresearch conclude …"）
+- 下一步：<等待计划批准 / 继续下一轮 / 等待结论确认>
+```
+
 ## adhoc 纪律（插话/顺手计算）
 
 - 任何计划外已发生的产生数值的动作（bash 现算、临时查表）：**先 `adhoc_record`

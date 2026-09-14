@@ -540,7 +540,112 @@ run_projects(client_factory, jobs, *, data_root, memory_store=None,
 
 ---
 
-## 14. 配置与环境变量
+## 14. engine + mcp_server：接口化内核与 MCP 接入（计划 v3）
+
+计划 v3（分支 `feature/interactive-agent`）把研究闭环包成两层对外接口：
+`ResearchEngine`（Python 门面，M1）与 `qresearch/mcp_server.py`（MCP server，
+M2）。五条铁律全部保留，其中铁律 3 在接口层落成 **A1 审批台账仲裁**：
+MCP 工具面**没有**任何能写"批准/结论"的工具（也无 `declare_result`，D6）——
+"写"只存在于真实终端的 CLI 审批台，且带 TTY 守卫（无人在场批不了）。
+
+### 14.1 ResearchEngine 门面（qresearch/engine.py，M1）
+
+```python
+engine = ResearchEngine(storage, event_log, client, *,
+                        experiments_root=..., runner=None, budget=None,
+                        retries=1, memory_store=None)
+engine.open_project(pid, question) -> Project        # 幂等（台账已有即返回）
+engine.state(pid) / engine.status(pid) -> dict       # 状态投影（供 UI/MCP）
+engine.understand(pid, question) / engine.hypothesize(pid, n=3)
+engine.plan_create(pid, *, round_no=..., user_notes=...) -> (plan, critique)
+engine.plan_revise(pid, plan_id, user_notes)          # 版本自动递增
+engine.plan_approve(pid, plan_id, *, actor, note)     # A1：MCP 面不暴露 actor 写入
+engine.experiments_run(plan_id, *, max_workers=1, cancel_check=None) -> dict
+engine.experiments_run_async(plan_id) -> job_id       # A2：MCP 层专用
+engine.verify(ids=None) / engine.analyze(pid, experiment_ids=...) / engine.decide(pid)
+engine.report_generate(pid, status=None) / engine.viz_plot(pid, out_dir)
+engine.adhoc_record / engine.adhoc_verify             # A6：计划外记账纪律
+```
+
+原则（A3）：**内核方法全部同步**——事件时序与 v2 严格一致（L1 基线锁定）；
+异步（job 协议）只存在于 MCP 一层（`experiments_run_async` 是唯一的例外入口，
+内部就是 `JobManager.submit(key="experiments:<plan_id>")`）。
+
+### 14.2 JobManager（qresearch/jobs.py，A2+A3）
+
+进程内异步 job 注册表，**只服务 MCP 层**（壳 B 的闭环不经过它）：
+
+```python
+jobs.submit(fn, *args, key=None, total=None) -> job_id   # 同 key 活跃 job 幂等（D4）
+jobs.status(job_id) -> {state, cancel_requested, done, total, last_event, elapsed_s}
+jobs.result(job_id) -> {state, result | error}           # 未完成时给轮询提示
+jobs.cancel(job_id) -> bool                              # pending→True；running→置请求返回 False
+jobs.cancel_requested(job_id) / jobs.find_active(key)
+```
+
+状态机 `pending → running → done | error`，另 `pending/running → cancelled`。
+job 生命周期是**进程内状态，不落台账**；台账事件由 job 内执行的引擎方法照常
+落账——异步化不改变台账语义（A5 归一化比对验证过）。MCP 工具调用默认 60s
+超时，同步返回必超时、agent 会误判重跑产生重复实验（D4）——所以**一切长工具
+（站点调用与实验 alike）都返回 `job_id`**，调用方轮询。
+
+### 14.3 MCP server（qresearch/mcp_server.py，M2，22 工具）
+
+stdio 传输；`python -X utf8 qresearch/mcp_server.py --project-root <root> --model <m>`。
+server 内嵌自己的 `DSHClient`（A7，懒创建：首个需要 LLM 的工具触发，
+`cwd=<project>/sandbox`）。工具面：
+
+| 类别 | 工具 |
+|---|---|
+| 项目 | `research_open` / `research_status` / `research_list` |
+| 站点（长，A2） | `understand` / `hypothesize` / `plan_create` / `plan_revise` |
+| 计划（读） | `plan_show`（含 markdown 卡片）/ `plan_approve`（**纯查询**） |
+| 实验（长） | `experiments_run`（计划须 APPROVED）/ `adhoc_record` / `adhoc_verify` |
+| 分析链 | `verify` / `analyze`（PASSED 才有资格）/ `decide`（requires_human 无条件） |
+| 产出 | `report_generate` / `viz_plot` |
+| 台账 | `ledger_query` / `events_tail` |
+| job 协议 | `job_status` / `job_result` / `job_cancel` |
+
+- **A1 仲裁**：`plan_approve(project_id, plan_id)` 只查台账里是否有
+  `actor=HUMAN` 的 `approve` 事件，返回 `approved_by_human` 与 `how_to`
+  （CLI 指引）。写路径唯一入口：`qresearch approve|reject <dir> <plan_id>`。
+- **D6**：`decide` 的 declare_result/terminate 一律 `requires_human=true`；
+  确认只经 `qresearch conclude <dir> <decision_id>`（幂等）。
+- 错误形状：异常不穿透——工具返回 `{"error": "<类型>: <消息>"}`，agent 可读。
+
+### 14.4 CLI 审批台（qresearch/ui/approvals.py，A1）
+
+```
+qresearch approve <project_dir> <plan_id>    # TTY → 计划简报 → y 确认 → approve_plan(actor=HUMAN)
+qresearch reject <project_dir> <plan_id>     # 同上（REJECTED + 意见落账）
+qresearch conclude <project_dir> <decision_id>  # 需 requires_human；幂等；刷新报告（concluded）
+qresearch approvals list <data_root>         # 只读：列出各项目待审批计划
+```
+
+`_require_tty` fail-closed：stdin 非 TTY 一律拒绝（rc=2）——批准这种事只能
+发生在有人的终端里（本仓库测试 harness 有 pty 属例外，L3 live 走查实证）。
+
+### 14.5 M3 运维补齐
+
+- **协作式取消**：`job_cancel` → `cancel_requested` → `experiments_run` 的
+  `cancel_check` 检查点（准备段：未建账的步骤不再产生记录；执行段：已建账
+  未执行的按取消落账——FAILED，`error="CancelledError: 人工取消…"`，事件标
+  `status=cancelled`；**已在跑的照常完成**——协作式，不杀进程，不谎报）。
+- **plan_show markdown 卡片**：`render_plan_markdown(..., edit_hint=False)`，
+  含目标量/步骤表/风险/critic 结论与 blocker/diff——给 `dsh web` 直接渲染。
+- **adhoc 蒸馏**：未验证的 adhoc 记录在蒸馏时生成失败案例层经验
+  （"bash 现算不可引用为证据——要进证据链必须用注册工具跑并 adhoc_verify"）。
+- **权限预设**（examples/setup_dsh_profile.py）：`research-interactive`
+  （workspace-write+ask，日常交互）/ `research-unattended`（read-only+ask，
+  无人值守：壳只读，实验仍走引擎子进程不受影响）。注意 patch 的 config 是
+  顶层浅替换——presets 必须带全量 map，改后 `dsh --profile research
+  --dump-config` 核对（改→验证→记录）。
+- **汇报模板**：SKILL.md 固定节点汇报模板（轮次/实验/证据/决策建议/下一步），
+  字段全部取自 `research_status`，禁止 agent 自由发挥。
+
+---
+
+## 15. 配置与环境变量
 
 | 变量/参数 | 作用 | 默认 |
 |---|---|---|
@@ -553,7 +658,7 @@ run_projects(client_factory, jobs, *, data_root, memory_store=None,
 
 ---
 
-## 15. 数据布局与回放
+## 16. 数据布局与回放
 
 ```
 research_data/
@@ -571,7 +676,7 @@ research_data/
 
 ---
 
-## 16. 测试与验收矩阵
+## 17. 测试与验收矩阵
 
 | 阶段 | 机制 | 离线验收 | live 验收 |
 |---|---|---|---|
@@ -590,7 +695,7 @@ research_data/
 
 ---
 
-## 17. 设计权衡备忘（为什么是这样）
+## 18. 设计权衡备忘（为什么是这样）
 
 1. **六站点而非自由 agent**：自由 agent 的中间态不可回放、不可审计；站点化把
    LLM 的贡献压缩到"受 schema 约束的一次提议"，其余全是确定性代码。

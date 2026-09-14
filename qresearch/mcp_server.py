@@ -35,6 +35,7 @@ from qresearch.core.status import Actor, ExperimentStatus, PlanStatus, Verificat
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient
 from qresearch.engine import ResearchEngine
+from qresearch.ui.plan_doc import render_plan_markdown
 
 server = MCPServer(
     name="qresearch",
@@ -243,7 +244,8 @@ def _plan_job(engine: ResearchEngine, project_id: str, *, user_notes: str,
 @server.tool()
 @_tool
 def plan_show(project_id: str, plan_id: str | None = None) -> dict:
-    """计划卡片（只读，给人看）：步骤表/风险/critic blocker/版本。缺省最新版。"""
+    """计划卡片（只读，给人看）：步骤表/风险/critic blocker/版本 + markdown 字段
+    （M3：目标量/步骤表/风险/blocker/diff，Web UI 直接渲染）。缺省最新版。"""
     eng = _open(project_id)
     plan = _latest_plan(eng, project_id, plan_id)
     verdict: str | None = None
@@ -253,6 +255,13 @@ def plan_show(project_id: str, plan_id: str | None = None) -> dict:
             verdict = e.detail.get("verdict")
             issues = e.detail.get("issues", [])
     blockers = [i for i in issues if i.get("severity") == "blocker"]
+    st = eng.state(project_id)
+    eng._sync_state_from_ledger(project_id, st)
+    project = eng.storage.get(Project, project_id)
+    markdown = render_plan_markdown(
+        plan, goal=st.goal, hypotheses=st.hypotheses,
+        critique_verdict=verdict, critique_issues=issues,
+        project_title=project.title if project else None, edit_hint=False)
     return {
         "plan_id": plan.plan_id, "version": plan.version, "status": plan.status.value,
         "based_on_decision": plan.based_on_decision, "diff_summary": plan.diff_summary,
@@ -264,6 +273,7 @@ def plan_show(project_id: str, plan_id: str | None = None) -> dict:
         "critic_verdict": verdict,
         "critic_issues": issues, "n_blockers": len(blockers),
         "human_approval": _human_approval_state(eng, project_id, plan.plan_id),
+        "markdown": markdown,
     }
 
 

@@ -12,7 +12,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from qresearch import __version__
 from qresearch.core.events import Event, EventLog
@@ -207,34 +207,61 @@ class ExperimentManager:
         prepared: list[tuple[Experiment, ToolSpec | None, PlanStep]],
         *,
         max_workers: int = 1,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[Experiment]:
         """执行已建账的实验。并行时只并行计算段，落账留在主线程按序进行
-        （Storage 非线程安全；EventLog 自带锁）。"""
+        （Storage 非线程安全；EventLog 自带锁）。
+
+        cancel_check（M3）：每个实验开跑前检查——已建账但未执行的按取消落账
+        （FAILED，事件标 cancelled）；已在跑的照常完成（协作式，不杀进程）。
+        """
         ready = [(e, spec, s) for e, spec, s in prepared if spec is not None]
         done: list[Experiment] = [e for e, spec, _s in prepared if spec is None]
         if max_workers <= 1 or len(ready) <= 1:
             for e, spec, s in ready:
+                if cancel_check is not None and cancel_check():
+                    done.append(self._finalize_cancelled(e))
+                    continue
                 done.append(self._run_and_finalize(e, spec, s))
             return done
         from concurrent.futures import ThreadPoolExecutor
 
         done_futures = []
+        cancelled: list[tuple[int, Experiment]] = []
         with ThreadPoolExecutor(max_workers=min(max_workers, len(ready))) as pool:
-            for e, spec, s in ready:
+            for i, (e, spec, s) in enumerate(ready):
+                if cancel_check is not None and cancel_check():
+                    cancelled.append((i, e))
+                    continue
                 t0 = time.monotonic()
-                done_futures.append((e, s, t0, pool.submit(self._compute, spec, s.inputs,
-                                                           self.root / e.experiment_id)))
-            # 按提交顺序落账（审计可读）
-            for e, s, t0, fut in done_futures:
+                done_futures.append((i, e, s, t0, pool.submit(self._compute, spec, s.inputs,
+                                                              self.root / e.experiment_id)))
+            # 按提交顺序落账（审计可读）；被取消的按原位次插入，保持账目次序
+            results: dict[int, Experiment] = {}
+            for i, e, s, t0, fut in done_futures:
                 elapsed = time.monotonic() - t0
                 try:
                     outcome, _ = fut.result()
                 except Exception as exc:  # noqa: BLE001 —— 失败也要落账
                     self._finalize_failure(e, self.root / e.experiment_id, exc, elapsed=elapsed)
-                    done.append(e)
+                    results[i] = e
                     continue
-                done.append(self._finalize_success(e, s, outcome, elapsed))
+                results[i] = self._finalize_success(e, s, outcome, elapsed)
+            for i, e in cancelled:
+                results[i] = self._finalize_cancelled(e)
+            done.extend(results[i] for i in sorted(results))
         return done
+
+    def _finalize_cancelled(self, experiment: Experiment) -> Experiment:
+        """协作式取消的诚实落账：账已建（started）但未执行——FAILED + 取消标注
+        （状态机不引入 CANCELLED：验证层对 FAILED 的处理天然适用）。"""
+        experiment.status = ExperimentStatus.FAILED
+        experiment.error = "CancelledError: 人工取消（job_cancel），实验未执行"
+        experiment.finished_at = _now()
+        self.storage.save(experiment)
+        self._event("experiment_finished", experiment,
+                    detail_extra={"status": "cancelled", "elapsed_s": 0.0})
+        return experiment
 
     def _finalize_success(
         self, experiment: Experiment, step: PlanStep, outcome, elapsed: float,
@@ -291,14 +318,20 @@ class ExperimentManager:
     def execute_plan(
         self, plan: ResearchPlan, *,
         include_requires_approval: bool = False, max_workers: int = 1,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[Experiment]:
         """执行计划全部可执行步骤。max_workers>1 时实验并行计算（落账仍按序）。
 
         注：requires_approval 步骤默认跳过（审批后由 include_requires_approval 显式放开）。
+        cancel_check（M3 协作式取消）：准备与执行两段都检查——未建账的步骤
+        不再产生记录；已建账未执行的按取消落账（FAILED，事件标 cancelled）；
+        已在跑的照常完成（协作式，不杀进程）。
         """
         # 先统一建账（scan 展开 + started 事件），再按需并行计算
         prepared: list[tuple[Experiment, ToolSpec | None, PlanStep]] = []
         for step in plan.steps:
+            if cancel_check is not None and cancel_check():
+                break
             if step.action not in RUNNABLE_ACTIONS:
                 continue
             if step.requires_approval and not include_requires_approval:
@@ -312,6 +345,8 @@ class ExperimentManager:
                     continue
                 keys = sorted(scan)
                 for idx, values in enumerate(_product_grid([scan[k] for k in keys])):
+                    if cancel_check is not None and cancel_check():
+                        break
                     point = dict(inputs)
                     for k, v in zip(keys, values):
                         point[k] = v
@@ -322,7 +357,8 @@ class ExperimentManager:
                     prepared.append(self._prepare(plan, scan_step))
             else:
                 prepared.append(self._prepare(plan, step))
-        return self._finish_prepared(prepared, max_workers=max_workers)
+        return self._finish_prepared(prepared, max_workers=max_workers,
+                                     cancel_check=cancel_check)
 
     # ---- 摘要
     def summarize(self, experiments: list[Experiment]) -> str:

@@ -138,4 +138,26 @@ def distill_project(storage: Storage, project_id: str) -> list[MemoryEntry]:
                     refs={**ref, "experiment_id": e.experiment_id, "report_id": vr.report_id},
                     source_project=project_id,
                 ))
+
+    # ---- adhoc 诚实边界（计划 v3 A6/M3）：登记后从未验证的计划外计算 --------
+    # bash 现算类 adhoc 永远过不了验证，把它蒸馏为教训（失败案例层，注入排最前）
+    for e in experiments:
+        if (e.plan_id == "" and e.step_id.startswith("adhoc_")
+                and e.status is ExperimentStatus.COMPLETED
+                and e.verification_status is VerificationStatus.NOT_RUN):
+            params = e.parameters or {}
+            meta = params.get("_adhoc", {})
+            visible = {k: v for k, v in params.items() if not k.startswith("_")}
+            entries.append(MemoryEntry(
+                layer=MemoryLayer.failure,
+                title=f"adhoc 未验证：{e.step_id}（{meta.get('kind', '?')}）",
+                content=(
+                    f"计划外计算：{meta.get('summary', '')}；输入 {visible}。"
+                    "教训：bash 现算/计划外数值不可引用为证据——要进证据链必须"
+                    "用注册工具跑（adhoc_record(tool=注册名)）并 adhoc_verify。"
+                ),
+                tags=_claim_tags(str(visible), extra=[*area_tags]),
+                refs={**ref, "experiment_id": e.experiment_id},
+                source_project=project_id,
+            ))
     return entries

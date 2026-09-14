@@ -88,6 +88,19 @@ def patch_yaml(python_exe: str, projects_root: str) -> str:
 - id: approval
   name: '@deepseek-ai/dsh-user-approval'
   config: {{ policy: ask }}
+# 权限预设（计划 v3 M3）：research-interactive（日常交互）/
+# research-unattended（无人值守：壳只读，实验仍走引擎子进程不受影响）。
+# 注意 patch 的 config 是顶层浅替换——presets 必须带全量（内置 3 个 + 新增 2 个），
+# 否则会把内置预设整个顶掉（改后用 --dump-config 核对）。
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    presets:
+      read-only: {{ sandbox: read-only, approval: ask }}
+      workspace-write: {{ sandbox: workspace-write, approval: ask }}
+      danger-full-access: {{ sandbox: danger-full-access, approval: never }}
+      research-interactive: {{ sandbox: workspace-write, approval: ask }}
+      research-unattended: {{ sandbox: read-only, approval: ask }}
 """
 
 

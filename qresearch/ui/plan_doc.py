@@ -42,6 +42,7 @@ def render_plan_markdown(
     critique_verdict: str | None = None,
     critique_issues: list[dict] | None = None,
     project_title: str | None = None,
+    edit_hint: bool = True,
 ) -> str:
     lines = [
         f"# 研究计划 v{plan.version}（{plan.status.value}）",
@@ -88,7 +89,8 @@ def render_plan_markdown(
             mark = "⛔" if sev == "blocker" else "·"
             lines.append(f"- {mark} [{sev}] {sid}：{desc}")
         lines.append("")
-    lines.append(_EDIT_HINT)
+    if edit_hint:
+        lines.append(_EDIT_HINT)
     return "\n".join(lines)
 
 

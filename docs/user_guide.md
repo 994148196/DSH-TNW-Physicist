@@ -148,6 +148,45 @@ summary = resume_research_loop(client, storage, log, PID, rounds=3, ...)
 
 ---
 
+### 3.5 交互式研究：在 `dsh web` 里像带研究生一样驱动（计划 v3）
+
+前面的方式都是"脚本驱动"。v3 提供第三种：DSH 壳作为对话前端，通过 MCP
+调用 qresearch 引擎——你说自然语言，agent 调 `mcp__qresearch__*` 工具，
+引擎负责一切记账与执行：
+
+```bash
+# 1) 落盘 research profile（幂等；--force 重写 patch）
+.venv/Scripts/python.exe -X utf8 examples/setup_dsh_profile.py     --projects-root D:/AI/Agent/Try/research-projects     --install-skill-to D:/AI/Agent/Try/research-projects
+
+# 2) 核对合并结果（改→验证→记录），零警告再启动
+dsh --profile research --dump-config
+dsh --profile research
+```
+
+五步走查（L3）：`research_open`（报项目 id）→ `understand`/`hypothesize`/
+`plan_create`（返回 job_id，`job_status` 轮询）→ `plan_show` 看卡片 →
+**你在真实终端批** `qresearch approve <dir> <plan_id>`，agent 用 `plan_approve`
+查询确认 → `experiments_run` → `verify` → `analyze` → `decide`。
+
+两条硬边界（agent 自己批不了、也宣布不了结论）：
+
+- **审批**：`plan_approve` 是纯查询——只查台账里有没有 `actor=HUMAN` 的
+  批准事件。写批准只能由你在真实终端运行 `qresearch approve|reject`。
+- **结论**：`decide` 的 declare_result/terminate 一律 `requires_human=true`，
+  确认只经 `qresearch conclude <dir> <decision_id>`（幂等，报告转 concluded）。
+
+其他要点：
+
+- 一切长工具返回 `job_id`，让 agent 用 `job_status`/`job_result` 轮询；
+  同 key 活跃 job 幂等，重复提交不会加速只会混乱。
+- 中途叫停：`job_cancel`。已在跑的实验照常完成，没开工的按取消落账——
+  台账诚实记录，不谎报"已取消"。
+- agent 的 bash 现算数字不是实验：要记账走 `adhoc_record`（默认未验证，
+  不得引用为证据）；要可引用就必须用注册工具跑并 `adhoc_verify`。
+- `qresearch approvals list <data_root>`：随时只读查看各项目待审批计划。
+
+---
+
 ## 4. 案例一：Heisenberg 链基态研究（真实 LLM 实测）
 
 这是系统完成的第一个真实研究项目（`research_data/demo_phase8_live/projects/proj_a/`，

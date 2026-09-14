@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：计划 v2 Phase 0–8 ✅ 全部完成且均经 live 验证（84→104→113 tests）。计划 v3（交互式 Agent 化，分支 `feature/interactive-agent`）：M0/M1 ✅、M2 ✅（119 tests；profile 已落盘 `~/.dsh/profiles/research` 且 `--dump-config` 零警告）——待 L3 live 五步走查与 M3。
+**一句话状态**：计划 v2 Phase 0–8 ✅ 全部完成且均经 live 验证（84→104→113 tests）。计划 v3（交互式 Agent 化，分支 `feature/interactive-agent`）：**M0/M1/M2/M3 全部 ✅**（125 tests；profile 含权限预设已落盘 `~/.dsh/profiles/research`，`--dump-config` 零警告）——待 L3 live 五步走查（人工）。
 
 最后更新：2026-09-14
 
@@ -21,7 +21,7 @@
 | Phase 8 | HPC 与多项目 | ✅ 完成 |
 | 计划 v3 M1 | 内核接口化：ResearchEngine façade + job 注册表 | ✅ 完成 |
 | 计划 v3 M2 | MCP 接入 + CLI 审批台 + skill + profile | ✅ 完成（待 L3 live 走查） |
-| 计划 v3 M3 | 体验与运维补齐 | ⬜ 未开始 |
+| 计划 v3 M3 | 协作式取消 + 汇报模板 + markdown 卡片 + 权限预设 + 文档 | ✅ 完成（待 L3 live 走查） |
 
 图例：✅ 完成 · 🔄 进行中 · ⬜ 未开始 · ⛔ 阻塞
 
@@ -249,8 +249,20 @@
 - **M2 完成标志**：L2 离线断言全过（smoke + pytest 双通道）；L4 反例的 MCP 面种子已入测试（L4-1/2/4/6 对应 adhoc/结论/检查项语义；L4-3 留待 live，L4-5 引用校验在 decide validator）；**L3 待人工**：`dsh --profile research` 五步走查（见计划 §4.2 M2 检验 4）。
 
 
+### 2026-09-14（计划 v3 M3：体验与运维补齐）
+- **协作式取消全栈**（jobs → engine → manager）：`JobManager.cancel_requested(job_id)`/`find_active(key)` 公开；`engine.experiments_run(cancel_check=)` 检查点直通 `ExperimentManager`——**准备段**（execute_plan 步骤循环与 scan 网格循环）取消即不再建账；**执行段**（_finish_prepared 串行与并行两路）已建账未执行的按取消落账：FAILED + `error="CancelledError: 人工取消（job_cancel），实验未执行"` + 事件标 `status=cancelled`（不引入 CANCELLED 状态：验证层对 FAILED 的处理天然适用）；**已在跑的照常完成**（协作式，不杀进程，不谎报）。`experiments_run_async` 回接 `cancel_requested` 形成 job_cancel → 检查点闭环；async 同 key 活跃时复用同一 job（幂等不重复提交）。
+- **plan_show markdown 卡片**：`render_plan_markdown(..., edit_hint=False)`——目标量/步骤表/风险/critic 结论与 blocker/diff_summary 渲染成 markdown 随 `plan_show.markdown` 返回（给 `dsh web` 直接渲染；编辑提示不属于 MCP 面）。
+- **adhoc 蒸馏**（memory/distill.py）：未验证 adhoc 记录（`plan_id==""` 且 `step_id` 以 `adhoc_` 开头、COMPLETED 但 NOT_RUN）蒸馏为失败案例层经验——"bash 现算不可引用为证据，要进证据链必须用注册工具跑并 adhoc_verify"（A6 的记忆侧闭环）。
+- **SKILL.md 节点汇报模板**：固定模板（轮次/实验/证据/决策建议/下一步），字段全部取自 `research_status`/`job_status`，requires_human 时必须注明等待人工——约束 agent 汇报不自由发挥。
+- **权限预设**（examples/setup_dsh_profile.py）：permission 插件 presets 全量 map（内置 3 个 + `research-interactive` workspace-write+ask / `research-unattended` read-only+ask）——注意 patch config 是顶层浅替换，预设必须带全量；真实 `~/.dsh` `--force` 重写后 `--dump-config` 复核零警告。
+- **测试 +7（113→119→125 passed）**：`tests/test_m3_ops.py` 5 项——取消先于执行（零账目）/ job_cancel 协作取消（在跑完成+未开取消落账+事件诚实）/ **混跑连续性**（交互式 1 轮 actor=HUMAN + 无人值守 2 轮 actor=SYSTEM → 计划版本 v1..v3 连续、证据累计 6 条、报告含全部轮次）/ adhoc 蒸馏失败案例 / viz 冒烟（计划+adhoc 混合台账 3 图）；`test_mcp_server.py` +1（plan_show markdown 卡片：无 critic/critic-pass/blocker 三态与 edit_hint=False）。全量 125 passed（exit 0），L1 基线不受 cancel_check 默认值影响。
+- **文档**：README（状态+功能表 MCP 行）/ user_guide §3.5（交互式研究：profile 落盘→dump-config→五步走查→两条硬边界→job/adhoc 要点）/ manual §14（engine 门面 + JobManager + MCP 22 工具 + CLI 审批台 + M3 运维，旧 14–17 顺延 15–18）。
+- **M3 完成标志**：计划 §4.3 检验 1（取消诚实落账）/ 2（混跑连续性）/ 3（viz）均入 pytest；汇报模板与权限预设落盘；**L3 待人工**：`dsh --profile research` live 走查（顺带实证 DSH bash 无 TTY——A1 TTY 守卫在壳内的真实行为）。
+
+
 ### 2026-09-14（Phase 9 完成：交互层——CLI 会话 / 计划文档 / 实时进度）
-- **P9.1 实时进度**：EventLog 加 `subscribe()` 订阅钩子（追加时同步回调，订阅者异常被吞——显示层永不干扰记账）；dsh_client 每次尝试前发 `station_started` 事件。`qresearch/ui/progress.py ConsoleProgress`：rich Live 单行刷新（spinner + "站点 X 调用中（第 N 次尝试）" + 统计行：轮次/实验完成失败/运行中/验证/已用时间），里程碑事件（plan_ready/approve/decide/实验完成…）持久打印；rich 缺失退化 `` 单行刷新。修 rich 15.0.0 Live 无 get_render → `_Dynamic.__rich_console__` 动态渲染包装。
+- **P9.1 实时进度**：EventLog 加 `subscribe()` 订阅钩子（追加时同步回调，订阅者异常被吞——显示层永不干扰记账）；dsh_client 每次尝试前发 `station_started` 事件。`qresearch/ui/progress.py ConsoleProgress`：rich Live 单行刷新（spinner + "站点 X 调用中（第 N 次尝试）" + 统计行：轮次/实验完成失败/运行中/验证/已用时间），里程碑事件（plan_ready/approve/decide/实验完成…）持久打印；rich 缺失退化 `
+` 单行刷新。修 rich 15.0.0 Live 无 get_render → `_Dynamic.__rich_console__` 动态渲染包装。
 - **P9.2 计划文档 + 双通道审批**：每版计划自动渲染为 `<项目目录>/plans/plan_vN.md`（ui/plan_doc.py，确定性渲染含步骤/输入 yaml/预期输出/风险/diff/critic 结论与 ⛔ blocker 标记，文末固定"修改意见"节）。审批菜单升级 `[y]/[c]/[e]/[s]/[q]`：意见通道支持**口述一长串**（任意自由文本）或 c 多行（空行结束）；**编辑通道 [e]**——用户直接改文档 → 回车 → `transcribe` 站点（第七站点）把编辑忠实转录回结构化计划 → 同一语义 validator（`_validate_plan_steps` 抽为共享函数）→ critic 独立重审 → 新版再批——**用户编辑不绕过验证管线**。事件留痕：`plan_feedback`（mode=verbal/edit_doc，actor=HUMAN）、`plan_transcribed`、`plan_ready`（from_user_edit/from_user_feedback）。
 - **P9.3 CLI 会话**：`pyproject.toml [project.scripts]` 注册 `qresearch` 命令（`[ui]` extra，rich 入依赖）。`ui/session.py` REPL：自然语言问题确认后跑 `run_research_loop(auto_approve=False, round_callback=…)`，全程 ConsoleProgress；斜杠命令 /projects /status /report /plots /pause /resume /quit（无参时单项目自动识别）；轮末交互点回车继续/输入意见（注入下一版计划）/stop 叫停；Ctrl+C 一次=轮末优雅停（stop_requested → 回调 "stop"），两次=立即中断（台账安全，/resume 续跑）。单线程 + 终端 typeahead：实验执行期间敲的字在下一个交互点被读，无需并发。设计边界：会话层零研究决策、零台账写入，只把用户的话路由成参数/反馈/命令。
 - **测试**：新增 tests/test_ui.py 12 项（订阅容错 / station_started / 进度计数与 Live 冒烟 / 文档渲染与 split_user_notes / 口述意见 / 多行 c / 编辑通道全流程 / EOF 不批准 / 会话命令 / 会话开题端到端 / pause 旗标 / 轮末 stop 语义）。既有测试同步 P9 语义（station_started 每尝试一条；多行意见需空行收尾）。**104 passed**。实现期修复：_validate_plan_steps 抽取时丢了延迟导入（NameError）；save_plan_doc 目录契约统一为"传项目目录，函数自加 plans/"（此前调用方传 plans/ 导致 plans/plans/）。

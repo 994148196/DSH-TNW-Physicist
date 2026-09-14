@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from qresearch import __version__
@@ -358,10 +359,13 @@ class ResearchEngine:
         return self.storage.get(ResearchPlan, plan_id)
 
     # -------------------------------------------------- 执行与验证
-    def experiments_run(self, plan_id: str, *, max_workers: int = 1) -> dict:
+    def experiments_run(self, plan_id: str, *, max_workers: int = 1,
+                        cancel_check: Callable[[], bool] | None = None) -> dict:
         """执行已批准计划的全部可执行步骤（同步；实验不经 LLM）。
 
         返回 {plan_id, project_id, experiment_ids, n_completed, n_failed, experiments}。
+        cancel_check：协作式取消检查点（MCP 层 job_cancel 用——取消后不再新建
+        实验账目，已建账的照常完成）。缺省 None，行为与 M1 严格一致。
         MCP 层经 experiments_run_async 包装为 job_id 协议（A2/A3）。
         """
         plan = self._require(plan_id, ResearchPlan)
@@ -369,7 +373,8 @@ class ResearchEngine:
         for s in plan.steps:
             for t in s.tools:
                 st.tool_by_step.setdefault(s.step_id, t)
-        experiments = self.manager.execute_plan(plan, max_workers=max_workers)
+        experiments = self.manager.execute_plan(
+            plan, max_workers=max_workers, cancel_check=cancel_check)
         return {
             "plan_id": plan_id, "project_id": plan.project_id,
             "experiment_ids": [e.experiment_id for e in experiments],
@@ -490,8 +495,17 @@ class ResearchEngine:
 
     # -------------------------------------------------- 异步 job 协议（MCP 层，A2/A3）
     def experiments_run_async(self, plan_id: str, *, max_workers: int = 1) -> str:
-        return self.jobs.submit(self.experiments_run, plan_id, max_workers=max_workers,
-                                key=f"experiments:{plan_id}")
+        """提交实验 job；worker 内按检查点轮询自身 cancel_requested（M3 协作式取消）。"""
+        key = f"experiments:{plan_id}"
+
+        def _run() -> dict:
+            job_id = self.jobs.find_active(key)
+            return self.experiments_run(
+                plan_id, max_workers=max_workers,
+                cancel_check=(lambda: self.jobs.cancel_requested(job_id))
+                if job_id else None)
+
+        return self.jobs.submit(_run, key=key)
 
     def job_status(self, job_id: str) -> dict:
         return self.jobs.status(job_id)
