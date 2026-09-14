@@ -78,11 +78,12 @@ qresearch/
 ├── tool_builder/    # spec.py（Spec 加载）+ builder.py（构建/修复/审查/晋升）
 ├── memory/          # store.py（四层经验库）/ distill.py（确定性蒸馏）/ inject.py（检索注入）
 ├── hpc/slurm.py     # SlurmConfig / render_sbatch / SlurmRunner(ToolRunner)
+├── viz.py           # plot_project：台账→三张 PNG（可选依赖 matplotlib）
 └── orchestrator.py  # ProjectJob + run_projects（多项目队列）
 tool_specs/          # 工具规格（出题侧）：tfim_ed.yaml + golden 定稿
 benchmarks/golden/   # 安装后的 golden 基准（simple_ed / dmrg_vs_simple_ed / tfim_ed）
 examples/            # phase2–8 验收演示 + smoke test + resume 演示
-tests/               # 84 项 pytest
+tests/               # 92 项 pytest
 research_data/       # 运行数据（gitignore）：每项目独立目录
 ```
 
@@ -357,7 +358,8 @@ auto_approve=False, builds_root=None, client_factory=None)`）：
 run_research_loop(client, storage, event_log, project_id, question, *,
                   rounds=3, auto_approve=False, n_hypotheses=3, retries=1,
                   experiments_root=None, memory_store=None, budget=None,
-                  pause_flag=None, max_parallel_experiments=1) -> dict
+                  pause_flag=None, max_parallel_experiments=1,
+                  round_callback=None) -> dict
 ```
 
 Round 0：understand → hypothesize（失败转 needs_human）。
@@ -366,18 +368,57 @@ Round 0：understand → hypothesize（失败转 needs_human）。
 ```
 轮开始 ──▶ 暂停检查（pause_flag 存在 → paused，等待 resume）
       ──▶ 预算检查（Budget 耗尽 → budget_exhausted + reason）
-      ──▶ plan_with_critic（记忆注入；critic blocker → 修订）
-      ──▶ 审批（人工 或 auto_approve 留痕）
+      ──▶ plan_with_critic（记忆注入 + 用户修改意见注入；critic blocker → 修订）
+      ──▶ 审批（对话式人工 / auto_approve 留痕）
       ──▶ execute_plan（实验可并行）→ verify（三层）→ analyze（资格门）
       ──▶ decide（记忆注入；declare_result/terminate → 收束；
            末轮 iterate → [预算闸] 强制 requires_human）
+      ──▶ round_callback（仅"还要继续"的轮次；None/"stop"/意见字符串）
 ```
 
 结束路径：`terminated`（decide 收束）/ `budget_exhausted`（含 reason）/
-`paused` / `{"needs_human": 轮次:原因}`。`_finalize` 生成 `report.md`
-（假设/计划/实验表/分析结论/决策记录/局限）并蒸馏记忆入库。
+`paused` / `stopped_by_user` / `{"needs_human": 轮次:原因}`。`_finalize`
+生成 `report.md`（置顶研究总结 + 计划版本历史 + 假设/实验表/分析结论/
+决策记录/局限）并蒸馏记忆入库。
 
-### 11.2 恢复（真相在库里）
+### 11.2 人工交互：对话式审批与轮末回调
+
+**对话式计划审批**（`loop._interactive_approval`）：展示计划摘要后循环
+`[y]批准 / [c]提修改意见 / [s]看步骤细节 / [q]放弃`。`c` → `plan_feedback`
+事件（actor=HUMAN）→ `plan_with_critic(previous=当前版, user_notes=意见)`
+生成新版本（重新过 critic、重新等审批）；EOF 一律按 q（放弃）——**绝不默认
+批准**。`user_notes` 在计划 prompt 的"研究者本人的修改意见"栏以最高优先级
+注入；模型不采纳必须写明理由。修订次数受 `max_revisions`（默认 5）约束。
+返回最终计划（调用方以返回值为准继续 EXECUTE）。
+
+**轮末回调**（`round_callback`，fresh/resume 均支持）：每轮 decide 后（且
+本轮未收束时）以 dict 摘要调用——`round_no` / `decision`（类型/建议/
+rationale）/ `experiments_this_round` / `evidence_this_round` / `evidence_total`。
+返回 `"stop"` → `user_stop` 事件 + `stopped_by_user` 终态（可 resume）；
+返回非空字符串 → `user_feedback` 事件（actor=HUMAN）+ 注入下一版计划
+（`_LoopState.user_notes`，只生效一轮后清空）。收束轮不触发——结论走
+declare_result 无条件人工确认通道。GUI/服务可据此实现节点推送与随时插话。
+
+### 11.3 报告生成（generate_report）
+
+确定性拼装，无 LLM 参与：**研究总结**（最终状态+决策链；结论=收束决策
+rationale 原文+决策 id；支撑证据=declare/accept 决策 checklist 中 passed 项
+逐条挂 evidence id；假设命运=支持/反驳/未判定；规模统计）→ 假设 →
+**计划版本历史**（每版：状态/步骤数、依据决策、diff_summary、critic 判定
+与阻塞项、审批者——由 `_finalize` 从 plan_ready/approve 事件重建 plan_notes）
+→ 实验表 → 分析结论 → 决策记录 → 局限。报告路径：`state.sqlite` 旁
+`report.md`。
+
+### 11.4 可视化（viz，可选依赖）
+
+`plot_project(storage, project_id, out_dir) -> list[Path]` 三张 PNG：
+工具×状态堆叠柱图；数值结果 vs 参数（按计划版本着色，实心=passed/空心=
+未过验证；只画"有变化的参数"≥2 个不同取值，排除 `_` 前缀簿记参数与结果中
+回显的输入值）；证据累计曲线+决策时间线。matplotlib 延迟导入（Agg 后端、
+中文字体 Microsoft YaHei/SimHei），缺失时报错提示 `pip install -e ".[viz]"`。
+全部数据来自台账——含失败、不做美化（诚实边界的可视化表述）。
+
+### 11.5 恢复（真相在库里）
 
 ```python
 resume_research_loop(client, storage, event_log, project_id, *, rounds=3, ...)

@@ -6,7 +6,7 @@ Phase 5 将把本片段扩展为含 EXECUTE/VERIFY/ANALYZE/DECIDE 的完整闭�
 from __future__ import annotations
 
 from qresearch.core.events import Event, EventLog
-from qresearch.core.models import Project, ResearchPlan, utcnow
+from qresearch.core.models import Goal, Hypothesis, Project, ResearchPlan, utcnow
 from qresearch.core.status import Actor, PlanStatus
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient
@@ -39,23 +39,84 @@ def reject_plan(
     ))
 
 
-def _interactive_approval(storage: Storage, event_log: EventLog, plan: ResearchPlan) -> None:
-    print("\n== 计划待审批 ==")
-    print(f"版本：v{plan.version}")
-    for s in plan.steps:
-        flag = " [需审批]" if s.requires_approval else ""
-        print(f"  {s.step_id} [{s.action}] {s.purpose}{flag}")
+def _show_plan_brief(plan: ResearchPlan) -> None:
+    print(f"\n== 计划待审批 ==（v{plan.version}，共 {len(plan.steps)} 步）")
+    for st in plan.steps:
+        flag = " [需审批]" if st.requires_approval else ""
+        tools = "、".join(st.tools) or "—"
+        print(f"  {st.step_id} [{st.action}] {st.purpose}（工具：{tools}）{flag}")
     if plan.risks:
         print("风险：" + "；".join(plan.risks))
     if plan.diff_summary:
         print(f"与上一版差异：{plan.diff_summary}")
-    answer = input("批准该计划？[y]es / [n]o：").strip().lower()
-    if answer.startswith("y"):
-        approve_plan(storage, event_log, plan, actor=Actor.HUMAN)
-        print("已批准。")
-    else:
-        reject_plan(storage, event_log, plan, actor=Actor.HUMAN, note="人工拒绝")
-        print("已拒绝。可修改问题或假设后重新运行。")
+
+
+def _interactive_approval(
+    storage: Storage, event_log: EventLog, plan: ResearchPlan, *,
+    client: DSHClient, goal: Goal, hypotheses: list[Hypothesis],
+    retries: int = 1, max_revisions: int = 5,
+) -> ResearchPlan:
+    """对话式计划审批（类 Claude Code）：看计划 → 批准 / 提意见修订 / 看细节 / 放弃。
+
+    - y：以 actor=HUMAN 批准；
+    - c：输入修改意见 → plan_feedback 事件（actor=HUMAN）→ plan_with_critic
+      （previous=当前版 + user_notes）生成新版本，重新过 critic、重新等审批；
+    - s：展开每步的 inputs/expected_outputs 细节；
+    - q（或 EOF）：放弃——绝不默认批准。
+    所有版本与反馈都落账，修订次数受 max_revisions 约束（防止无限对话）。
+    返回最终计划（可能是按意见修订后的新版本；拒绝时为当前版，状态 REJECTED）。
+    """
+    revisions = 0
+    while True:
+        _show_plan_brief(plan)
+        try:
+            answer = input("审批：[y]批准 / [c]提修改意见 / [s]看步骤细节 / [q]放弃：").strip().lower()
+        except EOFError:
+            answer = "q"  # 无人在场：绝不默认批准
+        if answer.startswith("y"):
+            approve_plan(storage, event_log, plan, actor=Actor.HUMAN)
+            print("已批准。")
+            return plan
+        if answer.startswith("s"):
+            for st in plan.steps:
+                print(f"  {st.step_id} [{st.action}] {st.purpose}")
+                print(f"    输入：{st.inputs}")
+                print(f"    预期输出：{st.expected_outputs}")
+            continue
+        if answer.startswith("c"):
+            if revisions >= max_revisions:
+                print(f"已达修订上限（{max_revisions} 次）：请 [y] 批准当前版，或 [q] 放弃。")
+                continue
+            try:
+                notes = input("修改意见（一行，将作为最高优先级注入下一版计划）：").strip()
+            except EOFError:
+                notes = ""
+            if not notes:
+                print("（空意见，未修订）")
+                continue
+            event_log.append(Event(
+                actor=Actor.HUMAN, action="plan_feedback", project_id=plan.project_id,
+                object_type="ResearchPlan", object_id=plan.plan_id,
+                detail={"version": plan.version, "notes": notes}))
+            new_plan, crit = plan_with_critic(
+                client, plan.project_id, goal, hypotheses,
+                previous=plan, user_notes=notes,
+                event_log=event_log, retries=retries)
+            new_plan.status = PlanStatus.AWAITING_APPROVAL
+            storage.save(new_plan)
+            event_log.append(Event(
+                actor=Actor.SYSTEM, action="plan_ready", project_id=plan.project_id,
+                object_type="ResearchPlan", object_id=new_plan.plan_id,
+                detail={"version": new_plan.version, "verdict": crit.verdict,
+                        "issues": [i.model_dump() for i in crit.issues],
+                        "from_user_feedback": plan.plan_id}))
+            plan = new_plan
+            revisions += 1
+            print(f"已按意见生成 v{plan.version}（critic 判定：{crit.verdict}）。")
+            continue
+        reject_plan(storage, event_log, plan, actor=Actor.HUMAN, note="人工放弃/拒绝")
+        print("已放弃。可修正问题或假设后重新运行。")
+        return plan
 
 
 def run_planning_phase(
@@ -106,5 +167,7 @@ def run_planning_phase(
         approve_plan(storage, event_log, plan, actor=Actor.SYSTEM,
                      note="auto-approve（演示/测试用，非人工）")
     else:
-        _interactive_approval(storage, event_log, plan)
+        plan = _interactive_approval(storage, event_log, plan, client=client,
+                                     goal=goal, hypotheses=hypotheses,
+                                     retries=retries)
     return storage.get(ResearchPlan, plan.plan_id)

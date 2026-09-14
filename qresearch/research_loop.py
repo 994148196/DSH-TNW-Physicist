@@ -27,11 +27,91 @@ from .stations.executors import analyze, decide, hypothesize, plan_with_critic, 
 
 
 # ================================================================ 报告生成
+def _hypothesis_fate_line(h) -> str:
+    fate = ("支持" if h.supporting_evidence
+            else ("反驳" if h.contradicting_evidence else "未判定"))
+    return f"- {h.statement} → **{fate}**\n  - 证伪试验：{'；'.join(h.falsification_tests)}"
+
+
+def _summary_section(project: Project, status: str, hypotheses: list,
+                     decisions: list, experiment_rows: list[dict],
+                     all_evidence: list) -> list[str]:
+    """研究总结（置顶）：最终状态 / 结论 / 关键证据 / 假设命运 / 规模统计。
+
+    全部内容确定性来自台账（铁律：LLM 只提议，代码记账）——结论正文取自
+    收束决策的 rationale 原文，证据逐条挂 id 可回放。
+    """
+    rec_chain = " → ".join(d.recommendation.value for d in decisions) or "（无决策）"
+    lines = ["## 研究总结", "", f"- **最终状态**：`{status}`（{len(decisions)} 轮；"
+             f"决策链 {rec_chain}）"]
+    final = decisions[-1] if decisions else None
+    concluded = final is not None and (
+        final.type.value == "declare_result"
+        or final.recommendation.value in ("terminate", "accept"))
+    if concluded and final is not None:
+        lines.append(f"- **结论**（收束决策 rationale 原文，"
+                     f"{final.decision_id}）：{final.rationale or '（未填写）'}")
+        passed = [c for c in final.checklist if c.status == "passed" and c.evidence]
+        if passed:
+            lines.append("- **支撑结论的关键证据**：")
+            lines += [f"  - {c.claim}（evidence: `{c.evidence}`）" for c in passed]
+        lines.append("- **提示**：收束决策 requires_human=是——结论确认权在人。")
+    else:
+        lines.append("- **结论**：（本轮运行未给出最终结论——"
+                     "以 iterate/replan 收尾或中途转出；见决策记录与局限）")
+    if hypotheses:
+        lines.append("- **假设命运**：")
+        lines += [f"  { _hypothesis_fate_line(h) }" for h in hypotheses]
+    n_done = sum(1 for r in experiment_rows if r["status"] == "completed")
+    n_fail = sum(1 for r in experiment_rows if r["status"] == "failed")
+    tools = sorted({r["tool"] for r in experiment_rows}) or ["—"]
+    lines.append(
+        f"- **规模**：实验 {len(experiment_rows)} 个（完成 {n_done} / 失败 {n_fail}，"
+        f"工具：{'、'.join(tools)}），证据 {len(all_evidence)} 条")
+    lines.append("")
+    return lines
+
+
+def _plan_history_section(plans: list, plan_notes: dict | None) -> list[str]:
+    """计划版本历史：每版的审查结论、阻塞项、步骤与修订说明（从台账/事件重建）。"""
+    lines = ["## 计划版本历史"]
+    for p in plans:
+        notes = (plan_notes or {}).get(p.plan_id, {})
+        verdict = notes.get("verdict", "—")
+        issues = notes.get("issues", [])
+        lines.append("")
+        lines.append(f"### 计划 v{p.version}（{p.status.value}，{len(p.steps)} 步）")
+        if p.based_on_decision:
+            lines.append(f"- 依据决策：`{p.based_on_decision}`（replan/修订）")
+        if p.diff_summary:
+            lines.append(f"- 与上一版差异：{p.diff_summary}")
+        blockers = [i for i in issues if isinstance(i, dict) and i.get("severity") == "blocker"]
+        lines.append(f"- critic 审查：{verdict}"
+                     + (f"（blocker {len(blockers)} 项）" if blockers else ""))
+        for i in issues:
+            if isinstance(i, dict):
+                sev = i.get("severity", "?")
+                mark = "⛔" if sev == "blocker" else "·"
+                lines.append(f"  - {mark} [{sev}] {i.get('step_id') or '整体'}："
+                             f"{i.get('description', '')[:200]}")
+        for s in p.steps:
+            flag = " [需审批]" if getattr(s, "requires_approval", False) else ""
+            lines.append(f"- `{s.step_id}` [{s.action}]{flag} {s.purpose}"
+                         f"（工具：{'、'.join(s.tools) or '—'}）")
+    lines.append("")
+    return lines
+
+
 def generate_report(
     project: Project, goal, hypotheses: list, plans: list,
     experiment_rows: list[dict], decisions: list, analyses: list,
+    *,
+    status: str = "terminated",
+    plan_notes: dict | None = None,
+    all_evidence: list | None = None,
 ) -> str:
-    """生成 markdown 研究报告：结论全部可追溯到 experiment/evidence。"""
+    """生成 markdown 研究报告：置顶研究总结 + 计划版本历史；结论全部可追溯。"""
+    all_evidence = all_evidence or []
     lines = [
         f"# 研究报告：{project.title}",
         "",
@@ -39,16 +119,17 @@ def generate_report(
         f"- 研究问题：{goal.question if goal else project.question}",
         f"- 目标量：{'、'.join(goal.quantities) if goal else '—'}",
         "",
+    ]
+    lines += _summary_section(project, status, hypotheses, decisions,
+                              experiment_rows, all_evidence)
+    lines += [
         "## 假设",
-        *[
-            f"- {h.statement}\n"
-            f"  - 证伪：{'；'.join(h.falsification_tests)}"
-            for h in hypotheses
-        ],
+        *[f"- {h.statement}\n"
+          f"  - 证伪：{'；'.join(h.falsification_tests)}" for h in hypotheses],
         "",
-        "## 计划",
-        *[f"- 计划 v{p.version}（{p.status.value}）：{len(p.steps)} 步" for p in plans],
-        "",
+    ]
+    lines += _plan_history_section(plans, plan_notes)
+    lines += [
         "## 实验（三层验证后）",
         "| 实验 | 步骤 | 工具 | 状态 | 关键结果 |",
         "|---|---|---|---|---|",
@@ -123,6 +204,7 @@ class _LoopState:
         self.all_rows: list[dict] = []
         self.all_evidence: list = []
         self.tool_by_step: dict[str, str] = {}
+        self.user_notes: str = ""  # 轮末回调收集的用户修改意见（下一轮计划注入）
 
 
 def _memory_event(event_log: EventLog, project_id: str, action: str, detail: dict) -> None:
@@ -180,12 +262,14 @@ def _rounds_loop(
     max_parallel_experiments: int,
     t_start: float,
     question: str,
+    round_callback=None,
 ) -> dict:
     """逐轮主循环（fresh/resume 共用）。返回终局片段：
     status ∈ terminated / budget_exhausted / paused；needs_human 由调用方拼装。"""
     from qresearch.core.status import DecisionRecommendation, DecisionType
 
     terminated = False
+    stopped_by_user = False
     paused = False
     budget_reason: str | None = None
     round_no = start_round
@@ -215,27 +299,33 @@ def _rounds_loop(
                     object_type="Loop", object_id=project_id, detail={"reason": reason}))
                 break
 
-            # ---- PLAN（critic 修订循环；注入记忆库检索）
+            # ---- PLAN（critic 修订循环；注入记忆库检索与用户修改意见）
             plan, critique = plan_with_critic(
                 client, project_id, state.goal, state.hypotheses,
                 previous=state.previous_plan, decision_id=state.last_decision_id,
                 memory_text=_memory_digest_text(event_log, project_id, memory_store,
                                                 state, question),
+                user_notes=state.user_notes,
                 event_log=event_log, retries=retries,
             )
+            state.user_notes = ""  # 意见只注入一轮
             plan.status = PlanStatus.AWAITING_APPROVAL
             storage.save(plan)
             event_log.append(Event(actor=Actor.SYSTEM, action="plan_ready",
                                    project_id=project_id, object_type="ResearchPlan",
                                    object_id=plan.plan_id,
                                    detail={"version": plan.version, "verdict": critique.verdict,
-                                           "round": round_no}))
+                                           "round": round_no,
+                                           "issues": [i.model_dump() for i in critique.issues]}))
             # ---- 审批（人工触点 1）
             if auto_approve:
                 approve_plan(storage, event_log, plan, actor=Actor.SYSTEM,
                              note="auto-approve（演示/测试用，非人工）")
             else:
-                _interactive_approval(storage, event_log, plan)
+                plan = _interactive_approval(
+                    storage, event_log, plan, client=client,
+                    goal=state.goal, hypotheses=state.hypotheses,
+                    retries=retries)
             if plan.status != PlanStatus.APPROVED:
                 return {"status": "plan_rejected", "round": round_no, "plan_id": plan.plan_id}
 
@@ -255,6 +345,8 @@ def _rounds_loop(
                 return None
 
             # ---- EXECUTE（max_workers>1 时实验并行计算，落账仍按序）
+            _rows_before = len(state.all_rows)
+            _ev_before = len(state.all_evidence)
             experiments = manager.execute_plan(plan, max_workers=max_parallel_experiments)
 
             # ---- VERIFY（证据资格门）
@@ -297,13 +389,40 @@ def _rounds_loop(
             state.all_decisions.append(decision)
             state.last_decision_id = decision.decision_id
 
-            if decision.type is DecisionType.DECLARE_RESULT or (
+            _terminal = decision.type is DecisionType.DECLARE_RESULT or (
                 decision.type is DecisionType.ITERATE_OR_TERMINATE
                 and decision.recommendation is DecisionRecommendation.TERMINATE
-            ):
+            )
+            if _terminal:
                 terminated = True
-                break
             state.previous_plan = plan
+            # ---- 轮末回调（节点报告 + 中途转向）：None=继续 / "stop"=停 / str=修改意见
+            # 仅在"还要继续"的轮次触发——收束轮结论走 declare_result 无条件人工确认
+            if round_callback is not None and not _terminal:
+                res = round_callback({
+                    "round_no": round_no,
+                    "decision": {"type": decision.type.value,
+                                 "recommendation": decision.recommendation.value,
+                                 "rationale": decision.rationale},
+                    "experiments_this_round": len(state.all_rows) - _rows_before,
+                    "evidence_this_round": len(state.all_evidence) - _ev_before,
+                    "evidence_total": len(state.all_evidence),
+                })
+                if isinstance(res, str) and res.strip().lower() == "stop":
+                    event_log.append(Event(
+                        actor=Actor.HUMAN, action="user_stop", project_id=project_id,
+                        object_type="Loop", object_id=project_id,
+                        detail={"round": round_no}))
+                    stopped_by_user = True
+                    break
+                if isinstance(res, str) and res.strip():
+                    state.user_notes = res.strip()
+                    event_log.append(Event(
+                        actor=Actor.HUMAN, action="user_feedback", project_id=project_id,
+                        object_type="Loop", object_id=project_id,
+                        detail={"round": round_no, "notes": state.user_notes}))
+            if _terminal:
+                break
             round_no += 1
     except NeedsHuman as e:
         msg = f"第 {round_no} 轮：{e}"
@@ -314,6 +433,9 @@ def _rounds_loop(
 
     if terminated:
         return {"status": "terminated"}
+    if stopped_by_user:
+        return {"status": "stopped_by_user",
+                "hint": "轮末回调请求停止；resume_research_loop 可从台账续跑"}
     if paused:
         return {"status": "paused"}
     if budget_reason is not None:
@@ -341,6 +463,7 @@ def run_research_loop(
     budget: Budget | None = None,
     pause_flag: str | Path | None = None,
     max_parallel_experiments: int = 1,
+    round_callback=None,
 ) -> dict:
     """完整研究闭环。返回 summary dict；所有状态可从 storage/events 回放。
 
@@ -391,6 +514,7 @@ def run_research_loop(
             retries=retries, auto_approve=auto_approve, memory_store=memory_store,
             budget=budget, pause_flag=pause_flag,
             max_parallel_experiments=max_parallel_experiments,
+            round_callback=round_callback,
             t_start=t_start, question=question,
         )
         needs_human = outcome.get("needs_human")
@@ -417,6 +541,7 @@ def resume_research_loop(
     budget: Budget | None = None,
     pause_flag: str | Path | None = None,
     max_parallel_experiments: int = 1,
+    round_callback=None,
 ) -> dict:
     """从台账恢复暂停/中断的项目续跑（计划 v2 §7.8：真相在库里）。
 
@@ -471,6 +596,7 @@ def resume_research_loop(
         retries=retries, auto_approve=auto_approve, memory_store=memory_store,
         budget=budget, pause_flag=pause_flag,
         max_parallel_experiments=max_parallel_experiments,
+        round_callback=round_callback,
         t_start=t_start, question=project.question,
     )
     status, summary = _finalize(
@@ -496,9 +622,21 @@ def _finalize(
     """收尾：报告生成 + 记忆蒸馏 + 状态裁决（fresh/resume 共用）。"""
     plans = sorted(storage.list(ResearchPlan, project_id=project_id),
                    key=lambda p: p.version)
+    # 计划版本历史：从事件重建每版的 critic 结论与审批者（可回放）
+    plan_notes: dict[str, dict] = {}
+    for e in event_log.events(project_id=project_id):
+        if e.action == "plan_ready":
+            plan_notes.setdefault(e.object_id, {}).update({
+                "verdict": e.detail.get("verdict", "—"),
+                "issues": e.detail.get("issues", []),
+            })
+        elif e.action == "approve":
+            plan_notes.setdefault(e.object_id, {})["approved_by"] = e.actor.value
     report_md = generate_report(
         project, state.goal, state.hypotheses, plans,
         state.all_rows, state.all_decisions, state.all_analyses,
+        status=needs_human if needs_human else outcome.get("status", "budget_exhausted"),
+        plan_notes=plan_notes, all_evidence=state.all_evidence,
     )
     report_path = Path(storage.path).parent / "report.md"
     report_path.write_text(report_md, encoding="utf-8")
@@ -518,7 +656,7 @@ def _finalize(
     if needs_human is not None:
         return "needs_human", {"reason": needs_human, **summary}
     status = outcome.get("status", "budget_exhausted")
-    if status == "plan_rejected":
+    if status in ("plan_rejected", "stopped_by_user", "paused"):
         summary.update({k: v for k, v in outcome.items()
                         if k not in ("status", "needs_human")})
     if "reason" in outcome and status == "budget_exhausted":

@@ -5,7 +5,7 @@ import re
 import pytest
 from qresearch.core.events import EventLog
 from qresearch.core.models import Decision, Evidence, ResearchPlan
-from qresearch.core.status import DecisionType, PlanStatus
+from qresearch.core.status import Actor, DecisionType, PlanStatus
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient
 from qresearch.research_loop import run_research_loop
@@ -202,3 +202,78 @@ def test_scan_without_scan_key_recorded_not_crash(tmp_path, make_scripted_client
     exps = mgr.execute_scan(plan, plan.steps[0])
     assert len(exps) == 1 and exps[0].status.value == "failed"
     assert "inputs.scan" in (exps[0].error or "")
+
+
+def test_round_callback_injects_user_notes(tmp_path, make_scripted_client):
+    """③ 轮末回调：digest 汇报节点；返回 str=修改意见 → 注入下一版计划 prompt 并落账。"""
+    plan_prompts: list[str] = []
+
+    def plan_recorder(prompt: str, session_id: str) -> str:
+        plan_prompts.append(prompt)
+        return PLAN_OK
+
+    digests: list[dict] = []
+
+    def callback(digest: dict):
+        digests.append(digest)
+        return "请把系统尺寸加倍" if digest["round_no"] == 1 else None
+
+    client = make_scripted_client({
+        "understand": UNDERSTAND_OK, "hypothesize": HYP_OK,
+        "plan": [Persistent(plan_recorder)],
+        "critic": [CRITIC_PASS] * 3,
+        "analyze": [Persistent(_analysis_response)],
+        "decide": [Persistent(_decide_factory(["iterate", "iterate", "declare_result"]))],
+    })
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    summary = run_research_loop(client, storage, log, "proj_cb", "Heisenberg q",
+                                rounds=3, auto_approve=True, round_callback=callback)
+    assert summary["status"] == "terminated"
+    # digest 只在"还要继续"的轮末汇报（收束轮结论走 declare_result 人工确认）
+    assert [d["round_no"] for d in digests] == [1, 2]
+    assert digests[0]["decision"]["recommendation"] == "iterate"
+    assert digests[0]["experiments_this_round"] == 2
+    # 意见只进第二轮计划 prompt，第三轮已清除（注入只生效一轮）
+    assert len(plan_prompts) == 3
+    assert "请把系统尺寸加倍" not in plan_prompts[0]
+    assert "请把系统尺寸加倍" in plan_prompts[1]
+    assert "研究者本人在上一轮结束时给出的修改意见" in plan_prompts[1]
+    assert "请把系统尺寸加倍" not in plan_prompts[2]
+    # 反馈以 actor=HUMAN 落账
+    feedbacks = [e for e in log.events(project_id="proj_cb")
+                 if e.action == "user_feedback"]
+    assert len(feedbacks) == 1
+    assert feedbacks[0].actor == Actor.HUMAN
+    assert feedbacks[0].detail["notes"] == "请把系统尺寸加倍"
+
+
+def test_round_callback_stop(tmp_path, make_scripted_client):
+    """③ 轮末回调返回 "stop"：当轮收尾即停（stopped_by_user），事件落账，可 resume。"""
+    digests: list[dict] = []
+
+    def callback(digest: dict):
+        digests.append(digest)
+        return "stop"
+
+    client = make_scripted_client({
+        "understand": UNDERSTAND_OK, "hypothesize": HYP_OK,
+        "plan": PLAN_OK, "critic": CRITIC_PASS,
+        "analyze": [Persistent(_analysis_response)],
+        "decide": [Persistent(_decide_factory(["iterate"]))],
+    })
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    summary = run_research_loop(client, storage, log, "proj_stop", "q",
+                                rounds=3, auto_approve=True, round_callback=callback)
+    assert summary["status"] == "stopped_by_user"
+    assert "resume_research_loop" in summary["hint"]
+    assert len(digests) == 1 and digests[0]["round_no"] == 1
+    actions = [e.action for e in log.events(project_id="proj_stop")]
+    assert actions.count("user_stop") == 1
+    # 中途停止也出报告（部分结果不丢），事件链以 report_generated 收尾
+    assert actions[-1] == "report_generated"
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "`stopped_by_user`" in report
+    # 停在第 1 轮末：只进行了 1 轮的实验
+    assert actions.count("experiment_started") == 2

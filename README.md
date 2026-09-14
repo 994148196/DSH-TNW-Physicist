@@ -6,7 +6,7 @@
 deepseek-v4-flash）只负责"提议"；记账、执行、验证、决策落账全部是确定性代码。
 
 **当前状态**：开发计划 v2 的 **Phase 0–8 全部完成**，且均经真实 LLM（live）
-验收。84 项测试全绿。详见 [PROGRESS.md](PROGRESS.md)。
+验收。92 项测试全绿。详见 [PROGRESS.md](PROGRESS.md)。
 
 ## 文档
 
@@ -27,6 +27,7 @@ deepseek-v4-flash）只负责"提议"；记账、执行、验证、决策落账�
 | 工具构建 | Spec 先行 + 防串通（编码 prompt 零基准数值）+ 修复循环 + 批评者审查 + 晋升 |
 | 研究记忆 | 跨项目四层经验库（项目/方法/工具/失败案例），确定性蒸馏、失败案例优先检索注入、Markdown 镜像 |
 | 运维 | 预算闸（轮数/实验数/墙钟）、PAUSE 旗标暂停 + 台账恢复续跑、多项目队列 + 每项目沙箱隔离、Slurm 后端（dry-run 诚实边界） |
+| 交互与产出 | 对话式计划审批（提修改意见→自动修订出新版）、轮末回调（节点汇报/叫停/插话注入下一轮）、置顶总结 + 计划版本历史的自动报告、三张台账可视化图（[viz]） |
 
 ## 最小示例
 
@@ -39,7 +40,7 @@ summary = run_research_loop(client, storage, log, "proj_1", "你的研究问题"
 ## 开发
 
 ```bash
-.venv/Scripts/python.exe -X utf8 -m pytest -q        # 84 passed
+.venv/Scripts/python.exe -X utf8 -m pytest -q        # 92 passed
 .venv/Scripts/python.exe -X utf8 examples/phase5_demo.py        # 离线 3 轮闭环
 .venv/Scripts/python.exe -X utf8 examples/phase8_demo.py --live # live 双项目队列
 ```

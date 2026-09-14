@@ -237,6 +237,7 @@ mgr = ExperimentManager(storage, log, runner=SlurmRunner(SlurmConfig(
 | `terminated` | 模型判定信息增益耗尽/结论成立，建议终止 | 读报告；terminate 也建议人工复核 |
 | `budget_exhausted` | 你设的预算（轮数/实验数/墙钟）用完 | 加预算 resume 续跑，或就此收尾 |
 | `paused` | PAUSE 旗标生效，轮间优雅暂停 | 删旗标后 resume |
+| `stopped_by_user` | 轮末回调返回 `"stop"`，你在中途喊停 | `resume_research_loop` 可随时续跑（台账不丢） |
 | `needs_human`（含轮次与原因） | 校验重试耗尽 / 末轮还想迭代 / runtime 异常 | 按原因处理：多半是修正做法后 resume，或人工接管该轮 |
 | `report` / `rounds_used` / `reason` / `decisions` | summary 附带报告路径、进度、原因、决策 id 列表 | — |
 
@@ -246,19 +247,67 @@ mgr = ExperimentManager(storage, log, runner=SlurmRunner(SlurmConfig(
 时代行但以 system 留痕注明"非人工"）和 **declare_result/terminate 确认**
 （无条件人工，模型层强制，代码不代行）。
 
-### 8.3 事件日志（events.jsonl）
+**计划审批是对话式的**（类似 Claude Code 的计划模式）：
+
+```
+== 计划待审批 ==（v1，共 8 步）
+  step_1 [run_experiment] 冒烟测试与约定锁定（工具：tfim_ed）
+  ...
+审批：[y]批准 / [c]提修改意见 / [s]看步骤细节 / [q]放弃：
+```
+
+- **y**：以你的身份（actor=HUMAN）批准落账；
+- **c**：输入一行修改意见 → 以 `plan_feedback` 事件留痕 → 系统带着你的意见
+  重新制题、重新过 critic、出**新版本计划**再请你批（可反复，直到 y/q）；
+  你的意见在下一版计划 prompt 里是最高优先级，模型不采纳必须写明理由；
+- **s**：展开每步的 inputs/expected_outputs 细节再决定；
+- **q**（或输入流结束/EOF）：放弃——**绝不默认批准**。
+
+### 8.3 中途报告与转向：round_callback
+
+`run_research_loop(..., round_callback=...)` 给你一个每轮收尾的挂钩，收到
+dict 摘要（轮号、本轮决策、本轮实验/证据数、证据总量），返回值决定走向：
+
+| 返回 | 行为 |
+|---|---|
+| `None` | 继续下一轮 |
+| `"stop"` | 当轮做完即停（status=`stopped_by_user`），部分结果照常出报告，可 resume |
+| `"你的修改意见"` | 意见落账（`user_feedback`，actor=HUMAN），**注入下一版计划的最高优先级栏**，只生效一轮 |
+
+收束轮（declare_result/terminate）不触发回调——结论走无条件人工确认通道。
+GUI/服务程序可借此实现"重要节点推送 + 人随时插话"。
+
+### 8.4 结果变化可视化
+
+```python
+from qresearch.viz import plot_project          # pip install -e ".[viz]"
+plot_project(storage, "my_project", out_dir)    # 返回 PNG 路径列表
+```
+
+三张图，全部由确定性代码从台账绘制（LLM 不参与，含失败，不做美化）：
+
+1. `experiment_tools.png` — 工具 × 状态堆叠柱状图（完成/失败分布）；
+2. `results_vs_param.png` — 数值结果随参数的变化，**按计划版本着色**
+   （实心点=验证通过，空心=未通过/未跑），看不同轮次计划产出如何演变；
+3. `evidence_timeline.png` — 证据累计曲线 + 决策时间线（虚线=每轮决策）。
+
+### 8.5 事件日志（events.jsonl）
 
 一行一个动作 JSON，按时间序即完整历史。高频事件：
 `station_call`（站点成功）/ `station_retry`（runtime 层失败重试，含错误）/
 `approve` / `experiment_started|finished` / `verify_experiment` / `analyze` /
 `decide` / `memory_retrieved|written` / `budget_exhausted` / `paused|resumed` /
-`needs_human` / `report_generated`。调试先看它。
+`needs_human` / `report_generated` / `plan_feedback`（你的审批修改意见）/`user_feedback`（轮末回调意见）/ `user_stop`（轮末叫停）。调试先看它。
 
-### 8.4 报告（report.md）
+### 8.6 报告（report.md）
 
-确定性骨架生成：研究问题与目标量 → 假设（含证伪试验命运）→ 计划（含风险）→
-实验表（步骤×工具×验证状态×关键结果）→ 分析结论（每条挂实验 id）→ 决策记录
-（每个 passed 检查项挂 evidence id）→ 局限与不确定性。**对外发布前需人工复核**。
+确定性骨架生成，**置顶是研究总结**：最终状态与决策链 → **结论**（收束决策
+rationale 原文，附决策 id）→ 支撑结论的关键证据（逐条挂 evidence id）→
+假设命运（支持/反驳/未判定）→ 规模统计。之后依次：假设（含证伪试验）→
+**计划版本历史**（每版的 critic 判定、阻塞项、依据决策、步骤清单——你提过
+的修改意见体现在版本差异里）→ 实验表（步骤×工具×验证状态×关键结果）→
+分析结论（每条挂实验 id）→ 决策记录（每个 passed 检查项挂 evidence id）→
+局限与不确定性。**对外发布前需人工复核**。
 
 ---
 

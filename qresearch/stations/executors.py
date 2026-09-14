@@ -92,6 +92,7 @@ def make_plan(
     critic_notes: str = "",
     decision_id: str | None = None,
     memory_text: str = "",
+    user_notes: str = "",
     event_log: EventLog | None = None,
     retries: int = 1,
 ) -> ResearchPlan:
@@ -140,6 +141,7 @@ def make_plan(
             version=version, goal=_goal_digest(goal), hypotheses=hypotheses_text,
             actions=actions_text(), tools=tools_text(),
             memory=memory_text or "（无）", critic_notes=critic_notes or "（无）",
+            user_notes=user_notes or "（无）",
             diff_instruction=diff_instruction,
         ),
         retries=retries, event_log=event_log, validator=_check_tools,
@@ -197,17 +199,20 @@ def plan_with_critic(
     decision_id: str | None = None,
     max_rounds: int = 2,
     memory_text: str = "",
+    user_notes: str = "",
     event_log: EventLog | None = None,
     retries: int = 1,
 ) -> tuple[ResearchPlan, CritiqueOutput]:
     """制定计划并交批评者攻击；存在 blocker 则修订再评（上限 max_rounds）。
 
+    user_notes：研究者本人上一轮的修改意见，原样注入本版计划 prompt
+    （修订版同样注入——意见在本轮内对所有版本有效）。
     即使未获 pass 也返回——阻塞项交由审批人裁决（人审是最终防线）。
     """
     version = previous.version + 1 if previous else 1
     plan = make_plan(
         client, project_id, goal, hypotheses, version=version, previous=previous,
-        decision_id=decision_id, memory_text=memory_text,
+        decision_id=decision_id, memory_text=memory_text, user_notes=user_notes,
         event_log=event_log, retries=retries,
     )
     critique_out: CritiqueOutput | None = None
@@ -225,7 +230,8 @@ def plan_with_critic(
         plan = make_plan(
             client, project_id, goal, hypotheses, version=plan.version + 1,
             previous=previous, critic_notes=notes, decision_id=decision_id,
-            memory_text=memory_text, event_log=event_log, retries=retries,
+            memory_text=memory_text, user_notes=user_notes,
+            event_log=event_log, retries=retries,
         )
     assert critique_out is not None
     return plan, critique_out
