@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：计划 v2 Phase 0–8 ✅ 全部完成且均经 live 验证（P5 完整 3 轮闭环 / P6 构建晋升 / P7 记忆库 / P8 双项目队列 live 全过，84 tests passed）。后续可选项：阶段五（多 Agent 协作，仅探索）。
+**一句话状态**：计划 v2 Phase 0–8 ✅ 全部完成且均经 live 验证（84→104→113 tests）。计划 v3（交互式 Agent 化，分支 `feature/interactive-agent`）：M0/M1 ✅、M2 ✅（119 tests；profile 已落盘 `~/.dsh/profiles/research` 且 `--dump-config` 零警告）——待 L3 live 五步走查与 M3。
 
 最后更新：2026-09-14
 
@@ -19,6 +19,9 @@
 | Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | ✅ 完成（live 验收 + 晋升） |
 | Phase 7 | Research Memory | ✅ 完成 |
 | Phase 8 | HPC 与多项目 | ✅ 完成 |
+| 计划 v3 M1 | 内核接口化：ResearchEngine façade + job 注册表 | ✅ 完成 |
+| 计划 v3 M2 | MCP 接入 + CLI 审批台 + skill + profile | ✅ 完成（待 L3 live 走查） |
+| 计划 v3 M3 | 体验与运维补齐 | ⬜ 未开始 |
 
 图例：✅ 完成 · 🔄 进行中 · ⬜ 未开始 · ⛔ 阻塞
 
@@ -227,6 +230,24 @@
 - **TFIM 示例重生成**（research-projects/tfim_cft_scaling/regen_report.py，只读台账）：report.md 102K 字符带全部新节（结论=accept 决策 rationale 原文；计划 v2/v4/v6 逐版 critic 结论与修订说明可见）；plots/ 三张 PNG 落盘。
 - 文档同步：user_guide（§8.2 对话审批 / §8.3 round_callback / §8.4 可视化 / §8.6 报告结构）、manual（§11.2–11.4 + 模块地图）、README（功能总览行）。
 - **待办：DSH 站内 agent 的写入沙箱**——DSH runtime 以 `cwd=项目根` 运行，站内 agent 会自行在仓库写草稿脚本（Phase 2 演示期间产生了 `ed_heis.py`/`corr_heis.py`，已移入 `research_data/demo_phase2/sandbox/` 存档）。实验层已隔离（`research_data/experiments/<exp_id>/`），但 DSH 站点调用的 `cwd` 仍指向项目根；应在 dsh_client/loop 层为每项目设沙箱目录。
+
+### 2026-09-14（计划 v3 M0+M1：评审修订 + 内核接口化）
+- **计划 v3 评审修订 A1–A7 入库**（commit `ce13f9d`）：A1 审批台账仲裁+CLI 审批台+TTY 守卫 / A2 异步 job 协议扩到站点调用（实测 3–5 分钟，60s 工具超时下同步必超时→agent 误判重跑）/ A3 引擎核心全同步、jobs.py 仅 MCP 层 / A4 Windows 沙箱部分执行→L4-3 判据放宽 / A5 验收数字与归一化事件比对 / A6 adhoc 语义（bash 现算永不可验证；注册工具路径可升级）/ A7 MCP server 内嵌自己的 DSHClient。
+- **M0 基线**（commit `843c7dd`）：`examples/compare_events.py`——归一化事件序列比对（剥离时间戳与每次运行新生成的 id/路径/elapsed），支持多 events.jsonl 串接；四条基线入库 `tests/baselines/{phase2,phase5,phase8,resume}.json`（14/64/164/2 条事件；phase8 为 6 个事件文件的串接）。L1 门从"字面 diff"升级为可执行的归一化回归。修 phase2 demo 离线剧本陈旧格式（parameter_scan 需 `inputs.scan` 包裹）。
+- **M1 内核接口化**（commit `e06c160`）：`qresearch/engine.py`——`ResearchEngine` 唯一科研入口（open/understand/hypothesize/plan_create(+revise 语义)/approve/reject/experiments_run/verify/analyze/decide/adhoc_record/adhoc_verify/report_generate/plot/status/events/ledger/resume_state），report 函数随迁；`qresearch/jobs.py`——进程内异步 job 注册表（submit/status/result/cancel/set_progress；**同 key 活跃 job 幂等**（D4 防重复实验）；pending 可取消、running 只置请求不谎报）；`research_loop.py`/`loop.py` 收口为薄驱动（公共签名不变，session/orchestrator/examples 零改动）。**A3 铁律：引擎方法全同步，异步只是 MCP 层封装**。
+- 配套：SQLite 线程安全（`check_same_thread=False` + RLock，job worker 线程写台账）；`tests/test_engine.py` 9 项（只读零写入/execute+verify/adhoc 诚实边界/审批事件/job 生命周期与幂等/异步端到端）。
+- **L1 门全绿**：113 tests passed + 四 demo 归一化事件序列与基线**零漂移**（重构前后行为逐字一致）。测试净增 104→113（既有测试文件零改动）。
+
+### 2026-09-14（计划 v3 M2：MCP 接入 + 审批台 + skill + profile）
+- **`qresearch/mcp_server.py`**：22 个工具（mcp 2.x，`MCPServer`/stdio；FastMCP 已更名）。要点：① **A2** 全部长工具（understand/hypothesize/plan_create/plan_revise/verify/analyze/decide/experiments_run/adhoc_verify）返回 job_id 轮询，同 key 活跃幂等；② **A1** `plan_approve` 是**纯台账仲裁**——不收 actor 参数、不写批准，只查 actor=HUMAN 事件并返回操作指引（工具 schema 实测仅 project_id+plan_id）；③ **D6（比计划更严的有意偏离）**：不设独立 `declare_result` 工具——结论只能经 decide 站点产生（引擎无条件 requires_human=True），agent 没有"自己宣布结论"的工具面；④ 错误统一 `{"error": ...}` dict（模型可读原因、通道不炸）；⑤ `_LazyClient` 按项目惰性创建 DSHClient（读工具零 runtime 子进程）；目录契约与 orchestrator 一致（`<root>/<pid>/{state.sqlite, events.jsonl, sandbox/, experiments/}`）。
+- **`qresearch/ui/approvals.py` + session.py 子命令分发**：`qresearch approvals/approve/reject/conclude`——**actor=HUMAN 审批事件的唯一写入口**。TTY 守卫 fail-closed（非 TTY 即拒）+ 显式 y 确认 + 批准前展示计划简报；`conclude`（D6）只对 requires_human=True 的决策开放、重复确认幂等、落 `conclude` 事件（actor=HUMAN）并刷新报告；`approvals` 只读列出全部待办。
+- **engine.report_generate 签名微调**：`status=None` 时从台账推导——存在 conclude 事件 → `concluded`，否则 `terminated`（agent 之后再生成报告不会冲掉人工结论状态；轮内驱动显式传 status 不受影响）。
+- **`qresearch/skills/research-protocol/SKILL.md`**：研究协议包（标准流程/审批指引/adhoc 纪律/禁止事项，对应计划 M2 第 3 条）。
+- **`examples/setup_dsh_profile.py`**：research profile 落盘到 `<DSH_HOME>/profiles/research/`（package.json 与 web 同底座 dsh-base+dsh-web-app；cordis.yml 空根；patch 默认不覆盖已有——`--force` 重写）。**实测发现并修正 patch 语法**：loader 里 `id:` 定位只用于覆盖既有条目，**新增插件条目必须经 `insert:` 追加**（直接写 `- id: mcp-qresearch` 会 "entry not found" 被静默跳过）——计划文档片段已同步修正。真实 `~/.dsh` 安装后 `dsh --profile research --dump-config` **零警告**、mcp-qresearch/sandbox-policy(workspace-write)/approval(ask) 全部挂载（D7）。
+- **`examples/mcp_smoke.py`**：真实 stdio 子进程冒烟（与 DSH mcp-client 同契约）——22 工具清单 / research_open / **只读工具字节级零写入**（L2）/ A1 仲裁 / 错误形状 / adhoc_verify job 协议与后台失败可查。
+- **`tests/test_mcp_server.py` 6 项**：工具面与 A1 schema（无 actor 参数）/ 只读零写入 / A1 仲裁+TTY 守卫全链（MCP 查→CLI 写→MCP 再查）/ D5 未批禁执行 / **A2 全链**（understand→hypothesize→plan_create→CLI 批准→experiments_run(幂等)→verify→ledger→analyze→decide(declare_result, requires_human)→CLI conclude(幂等)→报告 concluded）/ adhoc 诚实边界。测试 113→**119 passed**。
+- **M2 完成标志**：L2 离线断言全过（smoke + pytest 双通道）；L4 反例的 MCP 面种子已入测试（L4-1/2/4/6 对应 adhoc/结论/检查项语义；L4-3 留待 live，L4-5 引用校验在 decide validator）；**L3 待人工**：`dsh --profile research` 五步走查（见计划 §4.2 M2 检验 4）。
+
 
 ### 2026-09-14（Phase 9 完成：交互层——CLI 会话 / 计划文档 / 实时进度）
 - **P9.1 实时进度**：EventLog 加 `subscribe()` 订阅钩子（追加时同步回调，订阅者异常被吞——显示层永不干扰记账）；dsh_client 每次尝试前发 `station_started` 事件。`qresearch/ui/progress.py ConsoleProgress`：rich Live 单行刷新（spinner + "站点 X 调用中（第 N 次尝试）" + 统计行：轮次/实验完成失败/运行中/验证/已用时间），里程碑事件（plan_ready/approve/decide/实验完成…）持久打印；rich 缺失退化 `` 单行刷新。修 rich 15.0.0 Live 无 get_render → `_Dynamic.__rich_console__` 动态渲染包装。

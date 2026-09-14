@@ -239,17 +239,18 @@ class ResearchEngine:
 | `report_generate` / `viz_plot` | 产出 | 是 | 否 | 报告与三张图 |
 | `ledger_query` / `events_tail` | 查询 | 否 | 否 | 只读审计入口 |
 
-2. 新增 DSH profile 片段 `docs/` 内示例 + 脚本落盘到 `<DSH_HOME>/profiles/research/cordis.patch.yml`：
+2. 新增 DSH profile 片段（由 `examples/setup_dsh_profile.py` 落盘到 `<DSH_HOME>/profiles/research/cordis.patch.yml`，**实测语法**：loader 里 `id:` 定位只用于覆盖既有条目，**新增插件条目必须经 `insert:` 追加**——直接写 `- id: mcp-qresearch` 会 "entry not found" 被跳过；profile 清单与 web 同底座 = dsh-base + dsh-web-app）：
 
 ```yaml
-- id: mcp-qresearch
-  name: '@deepseek-ai/dsh-mcp-client'
-  config:
-    serverName: qresearch
-    transport: stdio
-    command: D:/AI/Agent/Try/DSH-TNW-Physicist/.venv/Scripts/python.exe
-    args: ['-m', 'qresearch.mcp_server', '--project-root', 'D:/AI/Agent/Try/research-projects']
-    toolCallTimeoutMs: 60000
+- insert:
+    - id: mcp-qresearch
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: qresearch
+        transport: stdio
+        command: D:/AI/Agent/Try/DSH-TNW-Physicist/.venv/Scripts/python.exe
+        args: ['-X', 'utf8', 'D:/AI/Agent/Try/DSH-TNW-Physicist/qresearch/mcp_server.py', '--project-root', 'D:/AI/Agent/Try/research-projects']
+        toolCallTimeoutMs: 60000
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
   config: { mode: workspace-write }

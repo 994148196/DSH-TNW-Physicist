@@ -564,16 +564,22 @@ class ResearchEngine:
                 if all(r.get(k) == v for k, v in filters.items())]
 
     def report_generate(self, project_id: str, *, state: _LoopState | None = None,
-                        status: str = "terminated") -> Path:
+                        status: str | None = None) -> Path:
         """生成/刷新报告（确定性拼装，置顶总结 + 计划版本历史）并落账事件。
 
         state：轮内驱动的进程内累计（含本轮 analyses）；缺省从台账重建
         （analyses 不落账——与 resume 行为一致，报告如实缺该节）。
+        status：缺省从台账推导——存在 actor=HUMAN 的 conclude 事件为
+        "concluded"（D6 人工确认结论），否则 "terminated"。
         """
         st = state or self.state(project_id)
         if st.goal is None or not st.all_decisions:
             self._sync_state_from_ledger(project_id, st)
         project = self._require(project_id, Project)
+        if status is None:
+            status = ("concluded" if any(e.action == "conclude"
+                                         for e in self.event_log.events(project_id=project_id))
+                      else "terminated")
         plans = self._plans(project_id)
         plan_notes: dict[str, dict] = {}
         for e in self.event_log.events(project_id=project_id):

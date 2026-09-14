@@ -318,6 +318,12 @@ class Session:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # 审批台子命令（A1：actor=HUMAN 审批事件的唯一写入口，TTY 守卫）优先分发
+    if argv and argv[0] in ("approvals", "approve", "reject", "conclude"):
+        from qresearch.ui import approvals
+
+        return approvals.main(argv)
     parser = argparse.ArgumentParser(
         prog="qresearch", description="量子多体自主科研闭环——交互式会话")
     parser.add_argument("--data-root", default="research_data",
