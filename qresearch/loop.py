@@ -3,18 +3,21 @@
 确定性骨架由本模块定义（计划 v2 §6.1）；智能在站点执行器内（经 DSH）。
 Phase 5 将本片段扩展为含 EXECUTE/VERIFY/ANALYZE/DECIDE 的完整闭环；
 Phase 9.2 把审批升级为"文档 + 多通道反馈"（markdown 计划 / 多行意见 / 编辑回读）。
+M1（计划 v3）起科研动作收口到 ResearchEngine（engine.py）：本模块保留审批原语
+（approve/reject/_interactive_approval，离线入口）与规划路径的薄编排。
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from qresearch.core.events import Event, EventLog
-from qresearch.core.models import Goal, Hypothesis, Project, ResearchPlan, utcnow
+from qresearch.core.models import Goal, Hypothesis, ResearchPlan, utcnow
 from qresearch.core.status import Actor, PlanStatus
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient
+from qresearch.engine import ResearchEngine
 from .stations.executors import (
-    critique, hypothesize, plan_with_critic, transcribe_plan, understand,
+    critique, plan_with_critic, transcribe_plan,
 )
 from .ui.plan_doc import save_plan_doc, split_user_notes
 
@@ -211,46 +214,30 @@ def run_planning_phase(
     """Phase 2 验收路径：科研问题 → 结构化 Goal → 候选假设 → plan（critic 通过）→ 人批。
 
     auto_approve 仅用于演示与测试（actor=system，事件留痕），不替代真实人工审批。
+    科研动作经 ResearchEngine（M1）；审批原语在本模块（离线入口）。
     """
-    project = Project(project_id=project_id, title=question[:40], question=question)
-    storage.save(project)
-    event_log.append(Event(actor=Actor.SYSTEM, action="create_project",
-                           project_id=project_id, object_type="Project", object_id=project_id))
-
-    goal = understand(client, project_id, question, event_log=event_log, retries=retries)
-    storage.save(goal)
-    event_log.append(Event(actor=Actor.SYSTEM, action="save",
-                           project_id=project_id, object_type="Goal", object_id=goal.goal_id))
-
-    hypotheses = hypothesize(client, project_id, goal, n=n_hypotheses,
-                             event_log=event_log, retries=retries)
-    for h in hypotheses:
-        storage.save(h)
+    engine = ResearchEngine(storage, event_log, client, retries=retries)
+    engine.open_project(project_id, question)
+    engine.understand(project_id)
+    hypotheses = engine.hypothesize(project_id, n=n_hypotheses)
     event_log.append(Event(actor=Actor.SYSTEM, action="save_hypotheses",
                            project_id=project_id, object_type="Hypothesis",
                            detail={"count": len(hypotheses),
                                    "ids": [h.hypothesis_id for h in hypotheses]}))
 
-    plan, critique = plan_with_critic(client, project_id, goal, hypotheses,
-                                      event_log=event_log, retries=retries)
-    plan.status = PlanStatus.AWAITING_APPROVAL
-    storage.save(plan)
-    event_log.append(Event(actor=Actor.SYSTEM, action="plan_ready",
-                           project_id=project_id, object_type="ResearchPlan",
-                           object_id=plan.plan_id,
-                           detail={"version": plan.version, "verdict": critique.verdict,
-                                   "issues": [i.model_dump() for i in critique.issues]}))
+    state = engine.state(project_id)
+    plan, critique = engine.plan_create(project_id)
 
     if auto_approve:
-        approve_plan(storage, event_log, plan, actor=Actor.SYSTEM,
-                     note="auto-approve（演示/测试用，非人工）")
-        save_plan_doc(Path(storage.path).parent, plan, goal=goal,
-                      hypotheses=hypotheses, critique_verdict=critique.verdict,
+        engine.plan_approve(plan.plan_id, actor=Actor.SYSTEM,
+                            note="auto-approve（演示/测试用，非人工）")
+        save_plan_doc(Path(storage.path).parent, plan, goal=state.goal,
+                      hypotheses=state.hypotheses, critique_verdict=critique.verdict,
                       critique_issues=[i.model_dump() for i in critique.issues])
     else:
         plan = _interactive_approval(
-            storage, event_log, plan, client=client, goal=goal,
-            hypotheses=hypotheses, retries=retries,
+            storage, event_log, plan, client=client, goal=state.goal,
+            hypotheses=state.hypotheses, retries=retries,
             critique_verdict=critique.verdict,
             critique_issues=[i.model_dump() for i in critique.issues])
     return storage.get(ResearchPlan, plan.plan_id)

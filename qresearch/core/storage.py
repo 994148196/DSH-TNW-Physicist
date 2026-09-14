@@ -2,10 +2,15 @@
 
 每类对象一张表：id / project_id / JSON payload。无数据库外键——引用完整性
 （假设与决策的证据引用、实验的工具引用）在包层面由 check_references 校验。
+
+线程安全（计划 v3 M1）：连接 check_same_thread=False + 实例级 RLock——MCP 层的
+异步 job 在 worker 线程里经引擎写台账（A2/A3），多 job 并发提交时在锁上串行；
+timeout=10 兼顾 M2 起多进程访问（CLI 审批台与 MCP server 各持连接）。
 """
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from .models import (
@@ -60,8 +65,9 @@ class Storage:
     def __init__(self, db_path: str | Path):
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._path)
+        self._conn = sqlite3.connect(self._path, timeout=10.0, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
         self._init_schema()
 
     @property
@@ -70,15 +76,16 @@ class Storage:
         return self._path
 
     def _init_schema(self) -> None:
-        for _cls, table, _id_field in _SPECS:
-            self._conn.execute(
-                f"CREATE TABLE IF NOT EXISTS {table} ("
-                "id TEXT PRIMARY KEY, project_id TEXT NOT NULL, json TEXT NOT NULL)"
-            )
-            self._conn.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{table}_project ON {table} (project_id)"
-            )
-        self._conn.commit()
+        with self._lock:
+            for _cls, table, _id_field in _SPECS:
+                self._conn.execute(
+                    f"CREATE TABLE IF NOT EXISTS {table} ("
+                    "id TEXT PRIMARY KEY, project_id TEXT NOT NULL, json TEXT NOT NULL)"
+                )
+                self._conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_project ON {table} (project_id)"
+                )
+            self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()
@@ -89,28 +96,31 @@ class Storage:
 
     def save(self, obj) -> None:
         cls, table, id_field = _spec_for(type(obj))
-        self._conn.execute(
-            f"INSERT INTO {table} (id, project_id, json) VALUES (?, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET json=excluded.json, project_id=excluded.project_id",
-            (getattr(obj, id_field), obj.project_id, obj.model_dump_json()),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                f"INSERT INTO {table} (id, project_id, json) VALUES (?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET json=excluded.json, project_id=excluded.project_id",
+                (getattr(obj, id_field), obj.project_id, obj.model_dump_json()),
+            )
+            self._conn.commit()
 
     def get(self, cls, object_id: str):
         cls, table, _id_field = _spec_for(cls)
-        row = self._conn.execute(
-            f"SELECT json FROM {table} WHERE id = ?", (object_id,)
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT json FROM {table} WHERE id = ?", (object_id,)
+            ).fetchone()
         return cls.model_validate_json(row["json"]) if row else None
 
     def list(self, cls, project_id: str | None = None) -> list:
         cls, table, _id_field = _spec_for(cls)
-        if project_id is None:
-            rows = self._conn.execute(f"SELECT json FROM {table}").fetchall()
-        else:
-            rows = self._conn.execute(
-                f"SELECT json FROM {table} WHERE project_id = ?", (project_id,)
-            ).fetchall()
+        with self._lock:
+            if project_id is None:
+                rows = self._conn.execute(f"SELECT json FROM {table}").fetchall()
+            else:
+                rows = self._conn.execute(
+                    f"SELECT json FROM {table} WHERE project_id = ?", (project_id,)
+                ).fetchall()
         return [cls.model_validate_json(r["json"]) for r in rows]
 
     # -- 聚合（ProjectBundle）----------------------------------------------
