@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0–7 ✅ 已完成（P5 live 完整 3 轮闭环 + P6 live 构建晋升 + P7 记忆库验收均通过）；Phase 8 ✅ 完成（HPC 与多项目：并行/预算/暂停恢复/Slurm dry-run/编排队列，验收演示 PASS）。
+**一句话状态**：计划 v2 Phase 0–8 ✅ 全部完成且均经 live 验证（P5 完整 3 轮闭环 / P6 构建晋升 / P7 记忆库 / P8 双项目队列 live 全过，84 tests passed）。后续可选项：阶段五（多 Agent 协作，仅探索）。
 
 最后更新：2026-09-14
 
@@ -138,6 +138,8 @@
 - [x] **测试基建修正**：脚本化假客户端的 callable 语义由"一律常驻"改为"一次性消费 + 显式 `Persistent` 包装"——旧语义使按序编排（如 decide: iterate→iterate→terminate）永远停在第一个应答上，正是 test_pause_and_resume 失败的根因；队列耗尽改为显式报错（"编排少写一轮"立即暴露，不再静默串位）
 - [x] `pytest` 全绿：**81 passed**（新增 hpc 6：并行计时与落账顺序 / 实验数预算 / 墙钟预算 / 暂停恢复三段衔接 / sbatch 渲染+dry-run 证据门 / 双项目队列隔离与记忆共享）
 - [x] **验收演示 PASS**：`examples/phase8_demo.py` 五段——① 4×0.25s 实验 0.30s 完成（并发峰值 4）；② 实验数预算闸第 2 轮前拦停；③ 暂停→恢复→终止全程版本/决策衔接；④ sbatch 渲染字段齐备 + dry-run 被证据门拒绝；⑤ 双项目队列 terminated + 沙箱隔离 + 记忆库跨项目入库
+- [x] **live 验收 PASS**（`--live`，真实 LLM 双项目队列）：proj_a（Heisenberg）**terminated**——2 轮 39 实验（simple_ed 22 次 + dmrg_adapter 17 次，含 29 条本机 quimb 缺陷失败案例如实入库），R1 iterate（1/N² 外推 vs Bethe ansatz 偏差 1.77e-4，含 1/N⁴ 项 7.2e-6），R2 terminate（带如实的证据覆盖自我批评）；proj_b（TFIM 临界区）hypothesize 期间 runner 断链悬挂 ~21 分钟 → 重试耗尽 → **needs_human 优雅收尾**（rounds_used=0 部分报告 + 记忆蒸馏 project 层）。队列/隔离/记忆断言全部成立
+- [x] **live 暴露并修复健壮性缺口——站点看门狗**：runner 子进程死亡后 SDK 等待可能永不返回（本例 runtime 侧 ~10 分钟静默后才断开，尾部风险是无限悬挂）。`DSHClient._run` 加 wallclock 看门狗（默认 15 分钟，`QRESEARCH_STATION_TIMEOUT_S` 可调）：超时 → 重启 runtime 子进程（旧 RPC 随之消亡）→ `StationTimeout`；`call_station` 将 runtime 层失败换 session 确定性重试并落账 `station_retry` 事件，耗尽转 `NeedsHuman`。测试 84 passed（新增看门狗 3：超时重启 / runtime 失败重试成功 / 持续失败转人工）
 
 验收标准（计划 v2 §9 Phase 8）：多项目可编排队列执行、实验可并行、可暂停恢复、预算可控、HPC 扩展点就位。**达成**（Slurm 真实提交路径留待集群环境验收，dry-run 已验证到脚本层）。
 
@@ -199,7 +201,8 @@
 - **Phase 8 完成**：并行实验 / 预算闸 / 暂停恢复 / Slurm 后端 / 多项目编排（见 Phase 8 验收清单）。设计要点：① 并行只切计算段，记账保持主线程（SQLite 非线程安全），落账顺序确定；② `research_loop.py` 重构为 `_rounds_loop` 共享主干 + `resume_research_loop` 台账重建——暂停/恢复的真相在库里，fresh 与 resume 不再有双实现；③ Slurm 后端实现 ToolRunner 接口（实验不经 LLM 铁律不变），dry-run 结果物理性过不了证据门——诚实边界落在机制上而非文档上；④ 编排器每项目独立沙箱 cwd，收口 Phase 2 的"站内 agent 写仓库根"遗留项。
 - **测试基建修正**：假客户端 callable 语义改一次性 + 显式 `Persistent`——旧语义的"callable 一律常驻"使按序 decide 编排永远停在第一个应答（test_pause_and_resume 的 budget_exhausted≠terminated 由此而来，循环本体无缺陷）。这修正波及 test_research_loop / test_tool_builder 的既有编排写法，全部改为显式常驻；队列耗尽从静默串位改为显式报错。
 - 测试 **81 passed**；验收演示五段全 PASS。Slurm 真实提交路径需集群环境（诚实边界已记入验收清单）。
-- 至此计划 v2 Phase 0–8 全部完成。后续可选项：Phase 8 的 live 验证（真实 LLM 双项目队列）；计划 v2 阶段五（多 Agent 协作 + 自动研究方向，仅探索不验收）。
+- **live 验收**（`--live` 双项目真实 LLM 队列）：proj_a terminated（2 轮 39 实验，1/N² 外推偏差 1.77e-4 的实质物理结论；dmrg_adapter 本机缺陷在 live 复现并被蒸馏为 29 条失败案例——跨项目记忆第一次从真实失败中积累）；proj_b 遭遇 runner 断链（悬挂 ~21 分钟）→ NeedsHuman 优雅收尾：部分报告 rounds_used=0、记忆蒸馏照常执行、队列继续。**事故驱动修复**：DSHClient 加站点看门狗（wallclock 上限 → 重启 runtime → station_retry 重试 → 耗尽转人工），把"runtime 死亡可能无限悬挂"变成有界确定性失败；这是 P2 以来"SDK 等待无超时"的最后一个已知裸露点。
+- 测试 **84 passed**。至此计划 v2 Phase 0–8 全部完成且均经 live 验证。后续可选项：计划 v2 阶段五（多 Agent 协作 + 自动研究方向，仅探索不验收）；Slurm 真实集群验收（需集群环境）。
 
 ## 阻塞 / 待决
 

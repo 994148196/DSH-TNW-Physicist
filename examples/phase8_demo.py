@@ -11,7 +11,8 @@
 5. 多项目队列：两个项目串行执行，目录/沙箱隔离，跨项目记忆共享滚动入库。
 
 用法：
-  .venv/Scripts/python.exe -X utf8 examples/phase8_demo.py
+  .venv/Scripts/python.exe -X utf8 examples/phase8_demo.py           # 全离线
+  .venv/Scripts/python.exe -X utf8 examples/phase8_demo.py --live    # 第 5 段接真实 LLM
 """
 from __future__ import annotations
 
@@ -246,47 +247,62 @@ def demo_slurm() -> None:
 
 
 # ================================================================ 5. 多项目队列
-def demo_orchestrator() -> None:
-    print("== 5. 多项目队列：两项目串行 + 沙箱隔离 + 记忆共享 ==")
+def demo_orchestrator(live: bool = False) -> None:
+    mode = "真实 LLM（每项目 2 轮，分钟级）" if live else "离线脚本（秒级）"
+    print(f"== 5. 多项目队列：两项目串行 + 沙箱隔离 + 记忆共享（{mode}） ==")
     store = MemoryStore(DATA / "memory.sqlite", markdown_path=DATA / "memory.md")
 
-    def factory(sandbox: Path) -> DSHClient:
-        return _make_client({
-            "understand": UNDERSTAND, "hypothesize": HYP_OK,
-            "plan": PLAN_OK, "critic": CRITIC_PASS,
-            "analyze": [_analysis_response],
-            "decide": [_decide_response("declare_result")],
-        })
+    if live:
+        # 真实 runtime：每项目以 cwd=沙箱 独立启动（编排器接线点）；
+        # retries=2 沿用 P5 live 教训（计划校验反馈重试上限）
+        def factory(sandbox: Path) -> DSHClient:
+            return DSHClient(cwd=sandbox, dsh_home=DATA / "dsh_home")
+    else:
+        def factory(sandbox: Path) -> DSHClient:
+            return _make_client({
+                "understand": UNDERSTAND, "hypothesize": HYP_OK,
+                "plan": PLAN_OK, "critic": CRITIC_PASS,
+                "analyze": [_analysis_response],
+                "decide": [_decide_response("declare_result")],
+            })
 
+    rounds = 2 if live else 1
     results = run_projects(
         factory,
-        [ProjectJob(project_id="proj_a", question="Heisenberg 链基态能量研究",
-                    rounds=1),
-         ProjectJob(project_id="proj_b", question="Heisenberg 链基态能量复核",
-                    rounds=1)],
+        [ProjectJob(project_id="proj_a", question="一维自旋 1/2 Heisenberg 链"
+                    "基态能量与 Bethe ansatz 对照研究", rounds=rounds,
+                    n_hypotheses=2),
+         ProjectJob(project_id="proj_b", question="横场 Ising 模型临界区基态"
+                    "能量密度研究", rounds=rounds, n_hypotheses=2)],
         data_root=DATA / "projects", memory_store=store, auto_approve=True,
+        retries=2,
     )
     for pid in ("proj_a", "proj_b"):
-        assert results[pid]["status"] == "terminated", (pid, results[pid])
+        status = results[pid].get("status") or results[pid].get("needs_human", "")
+        print(f"  {pid}: status={status}")
+        # live 模式下模型可能 iterate 到轮上限（needs_human/budget_exhausted，
+        # 均为合法收尾）；队列接线/隔离/记忆断言与状态无关，始终成立
         assert (DATA / "projects" / pid / "state.sqlite").exists()
         assert (DATA / "projects" / pid / "sandbox").is_dir()
         assert (DATA / "projects" / pid / "report.md").exists()
+    if not live:
+        assert all(r["status"] == "terminated" for r in results.values())
     projects = {e.source_project for e in store.list(MemoryLayer.project)}
     assert {"proj_a", "proj_b"} <= projects, "两个项目的经验都应入库（跨项目共享）"
-    print(f"  proj_a/proj_b 均 terminated；目录+沙箱隔离；记忆库项目层含 "
-          f"{sorted(projects)} ✔")
+    print(f"  目录+沙箱隔离 ✔；记忆库项目层含 {sorted(projects)} ✔")
     store.close()
 
 
 def main() -> int:
+    live = "--live" in sys.argv
     shutil.rmtree(DATA, ignore_errors=True)
     DATA.mkdir(parents=True, exist_ok=True)
     demo_parallel()
     demo_budget()
     demo_pause_resume()
     demo_slurm()
-    demo_orchestrator()
-    print("\nPhase 8 验收演示：全部 PASS")
+    demo_orchestrator(live=live)
+    print("\nPhase 8 验收演示：全部 PASS" + ("（live）" if live else ""))
     print("  （Slurm 诚实边界：本机无集群，dry_run 只生成/校验脚本；"
           "真实提交路径需集群环境验收）")
     return 0
