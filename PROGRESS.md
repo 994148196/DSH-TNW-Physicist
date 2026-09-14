@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0–5 ✅ 已完成；Phase 6 🔄（Tool Builder 机制 + live 构建验收 + 晋升完成，收尾中）。
+**一句话状态**：Phase 0–6 ✅ 已完成（P5 live 完整 3 轮闭环 + P6 live 构建晋升均通过）；Phase 7 🔄 进行中（Research Memory）。
 
 最后更新：2026-09-13
 
@@ -100,7 +100,9 @@
 - [x] `pytest` 全绿：**58 passed**（新增 research_loop 3：三轮端到端/预算闸/资格门拒绝）
 - [x] **验收演示**：`phase5_demo.py` 离线脚本模型 3 轮全自动闭环 → status=terminated，决策链 iterate→iterate→declare_result，6 条 Evidence，50 条事件全程可回放 → **PHASE 5 DEMO: PASS**（`--live` 支持真实 LLM 复跑同一流程）
 
-验收标准（计划 v2 §9 Phase 5）：MVP 问题全自动走完 3 轮，人工只批计划与终止，全程可回放。**达成（离线演示机制验证通过；真实 LLM 复跑为可选项）。**
+验收标准（计划 v2 §9 Phase 5）：MVP 问题全自动走完 3 轮，人工只批计划与终止，全程可回放。**达成（离线 + 真实 LLM 双验证）。**
+
+- [x] **live 完整闭环验收 PASS（2026-09-14）**：真实 DSH 全自动走完 3 轮 → status=terminated（非 needs_human），决策链 iterate→replan→terminate，381 条 Evidence，302 条事件可回放，报告 `research_data/demo_phase5_live/report.md`。三轮计划 v2/v4/v6 各 16–17 步；24+37+... 个实验（ED N=4–20 偶数尺寸能量序列 + SU(2) 单态校验 + 能隙标度 + dmrg_adapter 交叉验证），首轮 1 个 dmrg 失败被优雅落账且后续轮修复复跑；ANALYZE 一次通过资格门（8 观察+5 解读+10 不确定度）；prompt 加固（动作选择指引 + scan 错误信息给替代方案 + live 重试 2）后 plan 校验不再耗尽
 
 ## Phase 6 验收清单（进行中）
 
@@ -158,7 +160,11 @@
 - **构建者反驳出题侧并获得采纳**：Spec 初版"奇 N h=0 铁磁受挫"是错的（受挫的是 J<0 反铁磁）。构建者用全枚举验证 + 解析论证反驳——正是 Spec 期望的行为（发现 Spec 错误时如实声明而非迎合）。
 - **晋升完成**：交付代码逐字节保留（仅追加注册块），fixtures 与出题侧定稿 diff 一致后入库，`build_tool` 注册路径修为 `replace=True`（同名 seed/旧版本重建升级）。测试 **70 passed**（golden 主套件现含 tfim_ed 全部 8 项检查）。
 - **P5 live 复跑继续**：plan 校验反馈再加固（动作选择指引：run_experiment=单点 / parameter_scan=网格必须带 inputs.scan；错误信息给出替代动作）、live 重试上限提到 2——待复跑验证。
-- 下一步：**Phase 7**——Research Memory（验收：新项目能检索复用旧项目经验）。
+
+### 2026-09-14（Phase 5 live 完整闭环）
+- **P5 live 验收 PASS**：加固后首跑即完整走完 3 轮（~25 分钟，302 事件）——status=terminated，决策链 iterate→replan→terminate（第 2 轮模型主动判定路线信息增益耗尽建议 replan，第 3 轮换路线后 terminate 收束），381 条 Evidence，报告自动生成。plan 校验零耗尽（动作选择指引 + 错误信息给替代动作生效），1 个 dmrg 实验失败被优雅落账并在 replan 后复跑成功。至此 Phase 5 验收标准的"全自动 3 轮"在离线与真实 LLM 两种模式下均达成。
+- **Decision 质量观察**：checklist 全部挂真实 evidence id；replan 的 rationale 明确引用"第 2 轮状态与第 1 轮实质相同"——预算/信息增益判断有依据，非套话。
+- 下一步：**Phase 7**——Research Memory（四层记忆：项目/方法/工具/失败案例 + 检索注入；验收：新项目能检索复用旧项目经验，含"哪些实验没信息增益"）。
 
 ## 阻塞 / 待决
 
