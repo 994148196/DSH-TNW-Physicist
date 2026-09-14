@@ -32,6 +32,7 @@ qresearch 是一个**自主科研闭环系统**：你给它一个凝聚态物理
 ```bash
 # 1) 安装依赖（项目根目录）
 uv pip install -e .                      # 或 pip install -e .
+uv pip install -e ".[ui,viz]"            # 交互会话（rich 进度条）+ 台账可视化
 
 # 2) DSH runtime（首次）：项目内隔离安装，不动全局
 #    已随仓库就位则跳过（.dsh-runtime/ 目录存在即可）
@@ -103,7 +104,38 @@ finally:
 > 建议路径：先用 `auto_approve=True` 跑通 → 正式研究改回 `False`，每轮审批
 > 计划（审批动作会以你的身份留痕，而非 system）。
 
-### 3.3 一行没跑完怎么办？
+### 3.3 交互式会话（像 Code Agent 一样，推荐）
+
+安装了 `[ui]` extra 后，命令行直接敲：
+
+```bash
+qresearch --data-root research_data      # 默认目录可省略
+```
+
+进入会话后**用自然语言描述研究问题**（写清模型、观测量、对照判据），确认后
+自动开跑完整闭环。运行中你能看到：
+
+- **实时进度**：spinner 显示"当前正在做什么"（哪个站点调用中/第几次尝试、
+  实验完成/失败/验证计数、已用时间），里程碑事件持久打印，绝不刷屏丢信息；
+- **计划文档**：每版计划自动写成 `<项目目录>/plans/plan_vN.md`，审批提示里
+  给出路径——可以用编辑器直接打开改；
+- **轮末节点汇报**：每轮收尾报告决策与证据增量，回车继续 / 输入修改意见 /
+  `stop` 叫停（运行中随时按一次 Ctrl+C 也会在轮末优雅停，两次立即中断）。
+
+会话内斜杠命令（跨项目管理）：
+
+```
+/projects   列出已有项目        /status <pid>   项目进度
+/report <pid> 打印研究总结      /plots <pid>    生成三张台账图
+/pause <pid>  轮间优雅暂停      /resume <pid>   从台账续跑
+/quit       退出
+```
+
+会话层的职责边界：它只把你的话路由成**参数/反馈/命令**，零研究决策、零台账
+写入；所有编辑都要走"转录→语义校验→critic→审批"管线才生效，研究真相仍然
+只在台账里。
+
+### 3.4 一行没跑完怎么办？
 
 进程可以中断，状态在库里。重入时改用恢复入口：
 
@@ -253,15 +285,25 @@ mgr = ExperimentManager(storage, log, runner=SlurmRunner(SlurmConfig(
 == 计划待审批 ==（v1，共 8 步）
   step_1 [run_experiment] 冒烟测试与约定锁定（工具：tfim_ed）
   ...
-审批：[y]批准 / [c]提修改意见 / [s]看步骤细节 / [q]放弃：
+计划文档：research_data/<pid>/plans/plan_v1.md（可直接编辑；e 键走编辑回读流程）
+审批：[y]批准 / [c]提修改意见 / [e]编辑文档 / [s]看步骤细节 / [q]放弃：
 ```
 
+每版计划同时写成 markdown 文档（`plans/plan_vN.md`），两条修改通道随你选：
+
+- **意见通道（c / 直接输入文字）**：在审批提示处直接打一段话即可（不必逐条
+  口述），按 c 则可输**多行**意见（空行结束）→ 以 `plan_feedback` 事件留痕
+  （actor=HUMAN）→ 系统带着你的意见重新制题、重新过 critic、出**新版本计划**
+  再请你批；你的意见在下一版计划 prompt 里是最高优先级，模型不采纳必须写明理由；
+- **编辑通道（e）**：在编辑器里直接改 `plan_vN.md`（改步骤/工具/输入都行，
+  也可以只在文末"修改意见"节写想法），保存后回终端按回车 → `transcribe`
+  站点把你的编辑**转录**回结构化计划（你的话只是"意图的结构化"）→ 语义校验
+  → critic 独立重审 → 新版本再请你批。**用户编辑不绕过验证管线**；
 - **y**：以你的身份（actor=HUMAN）批准落账；
-- **c**：输入一行修改意见 → 以 `plan_feedback` 事件留痕 → 系统带着你的意见
-  重新制题、重新过 critic、出**新版本计划**再请你批（可反复，直到 y/q）；
-  你的意见在下一版计划 prompt 里是最高优先级，模型不采纳必须写明理由；
 - **s**：展开每步的 inputs/expected_outputs 细节再决定；
-- **q**（或输入流结束/EOF）：放弃——**绝不默认批准**。
+- **q**（或输入流结束/EOF/Ctrl+C）：放弃——**绝不默认批准**。
+
+修订次数受上限约束（默认 5 次）防无限对话；每版文档与每条意见都落账可回放。
 
 ### 8.3 中途报告与转向：round_callback
 
@@ -297,7 +339,10 @@ plot_project(storage, "my_project", out_dir)    # 返回 PNG 路径列表
 `station_call`（站点成功）/ `station_retry`（runtime 层失败重试，含错误）/
 `approve` / `experiment_started|finished` / `verify_experiment` / `analyze` /
 `decide` / `memory_retrieved|written` / `budget_exhausted` / `paused|resumed` /
-`needs_human` / `report_generated` / `plan_feedback`（你的审批修改意见）/`user_feedback`（轮末回调意见）/ `user_stop`（轮末叫停）。调试先看它。
+`needs_human` / `report_generated` / `station_started`（站点开始调用，进度条数据源）/
+`plan_feedback`（你的审批修改意见，`mode=verbal` 口述 / `edit_doc` 文档编辑）/
+`plan_transcribed`（编辑通道转录）/ `user_feedback`（轮末回调意见）/
+`user_stop`（轮末叫停）。调试先看它。
 
 ### 8.6 报告（report.md）
 

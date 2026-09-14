@@ -68,7 +68,7 @@ qresearch/
 │   ├── io.py            # 项目 bundle 导出/导入
 │   └── testing.py       # 演示数据工厂
 ├── dsh_client.py    # DSH SDK 唯一封装点：call_station / run_agent / 看门狗
-├── stations/        # 六站点：schemas（pydantic输出）/ prompts / executors
+├── stations/        # 七站点：schemas（pydantic输出）/ prompts / executors
 ├── loop.py          # 规划阶段（understand→…→approve，含 revise 循环）
 ├── research_loop.py # 研究闭环：run_research_loop / resume_research_loop
 ├── experiments/
@@ -79,11 +79,13 @@ qresearch/
 ├── memory/          # store.py（四层经验库）/ distill.py（确定性蒸馏）/ inject.py（检索注入）
 ├── hpc/slurm.py     # SlurmConfig / render_sbatch / SlurmRunner(ToolRunner)
 ├── viz.py           # plot_project：台账→三张 PNG（可选依赖 matplotlib）
+├── ui/              # 人机交互层（Phase 9）：progress.py（事件驱动进度条）/ 
+│                    #   plan_doc.py（计划 markdown 文档）/ session.py（CLI 会话）
 └── orchestrator.py  # ProjectJob + run_projects（多项目队列）
 tool_specs/          # 工具规格（出题侧）：tfim_ed.yaml + golden 定稿
 benchmarks/golden/   # 安装后的 golden 基准（simple_ed / dmrg_vs_simple_ed / tfim_ed）
 examples/            # phase2–8 验收演示 + smoke test + resume 演示
-tests/               # 92 项 pytest
+tests/               # 104 项 pytest
 research_data/       # 运行数据（gitignore）：每项目独立目录
 ```
 
@@ -125,8 +127,11 @@ load_bundle 时校验完整性。
 
 ### 4.4 EventLog（events.py）
 
-JSONL 追加（一事件一行），字段：`timestamp / actor(model|system) / action /
+JSONL 追加（一事件一行），字段：`timestamp / actor(model|system|human) / action /
 project_id / object_type / object_id / detail`。自带线程锁（并行实验时安全）。
+
+`subscribe(callback)`：追加时同步回调事件——显示层（ui.progress）借此实时
+渲染。订阅者异常被**吞掉**（铁律：显示是视图，绝不干扰记账闭环）。
 **回放**：`EventLog(path).events(project_id=...)` 按序返回——这是审计与调试
 的第一入口。常见事件：
 
@@ -193,7 +198,7 @@ worker 线程并 `join(timeout)`：超时 → `_restart_harness()`（关闭旧 r
 
 ---
 
-## 6. stations：六个 LLM 站点
+## 6. stations：七个 LLM 站点
 
 每个站点 = 一个 prompt 模板（prompts.py）+ 一个输出 schema（schemas.py）+
 一个执行器（executors.py，负责调用 call_station、落账、返回台账对象）。
@@ -206,6 +211,7 @@ worker 线程并 `join(timeout)`：超时 → `_restart_harness()`（关闭旧 r
 | critic | `CritiqueOutput` | verdict pass/blocker + issues；对计划做独立物理审查 |
 | analyze | `AnalyzeOutput` | observations（**实验引用必须是本轮已验证实验**，资格门在下游兜底）/ interpretations / uncertainties / recommended_next_steps |
 | decide | `DecideOutput` | recommendation（iterate/replan/terminate/declare_result）+ checklist（passed 项必须挂 evidence id——模型无法引用看不见的 id，prompt 显式列出）+ info_gain_estimate；模板含**记忆注入块**（失败案例优先） |
+| transcribe | `PlanOutput` | 编辑通道（Phase 9）：把用户直接编辑的计划文档忠实转录回结构化计划——不许增删或"纠正"用户编辑；产物仍过同一套语义 validator + critic（用户编辑不绕过验证管线） |
 
 审批触点：plan 通过 critic 后进入 `awaiting_approval`；人工（或
 `auto_approve=True` 下的 system 留痕）批准后 `plan_ready → approve`。
@@ -383,11 +389,17 @@ Round 0：understand → hypothesize（失败转 needs_human）。
 
 ### 11.2 人工交互：对话式审批与轮末回调
 
-**对话式计划审批**（`loop._interactive_approval`）：展示计划摘要后循环
-`[y]批准 / [c]提修改意见 / [s]看步骤细节 / [q]放弃`。`c` → `plan_feedback`
-事件（actor=HUMAN）→ `plan_with_critic(previous=当前版, user_notes=意见)`
-生成新版本（重新过 critic、重新等审批）；EOF 一律按 q（放弃）——**绝不默认
-批准**。`user_notes` 在计划 prompt 的"研究者本人的修改意见"栏以最高优先级
+**对话式计划审批**（`loop._interactive_approval`）：每版计划先由
+`ui.plan_doc.save_plan_doc` 渲染成 `<项目目录>/plans/plan_vN.md`（确定性
+渲染，LLM 不参与；文末带"修改意见"节与编辑说明），展示摘要后循环
+`[y]批准 / [c]提修改意见 / [e]编辑文档 / [s]看步骤细节 / [q]放弃`。
+- 意见通道：`c`（多行，空行结束）或**直接输入一段文字** → `plan_feedback`
+  事件（actor=HUMAN，`mode=verbal`）→ `plan_with_critic(previous=当前版,
+  user_notes=意见)` 生成新版本（重新过 critic、重新等审批）；
+- 编辑通道：`e` → 用户改文档 → 回车 → `split_user_notes` 拆正文/意见 →
+  `transcribe` 站点转录（`mode=edit_doc` 留痕）→ 同一语义 validator →
+  critic 独立重审 → 新版本。**用户编辑不绕过验证管线**。
+EOF/Ctrl+C 一律按 q（放弃）——**绝不默认批准**。`user_notes` 在计划 prompt 的"研究者本人的修改意见"栏以最高优先级
 注入；模型不采纳必须写明理由。修订次数受 `max_revisions`（默认 5）约束。
 返回最终计划（调用方以返回值为准继续 EXECUTE）。
 
@@ -418,7 +430,29 @@ rationale 原文+决策 id；支撑证据=declare/accept 决策 checklist 中 pa
 中文字体 Microsoft YaHei/SimHei），缺失时报错提示 `pip install -e ".[viz]"`。
 全部数据来自台账——含失败、不做美化（诚实边界的可视化表述）。
 
-### 11.5 恢复（真相在库里）
+### 11.5 交互层（Phase 9，qresearch.ui）
+
+职责边界：**视图与控制**——零研究决策、零台账写入；所有用户编辑走
+"转录→语义校验→critic→审批"管线。三个组件：
+
+- **progress.py `ConsoleProgress(event_log)`**：订阅 EventLog，rich Live
+  单行刷新 spinner + 统计（第 R 轮/实验完成失败/运行中/验证/已用时间），
+  `station_started` 事件由 dsh_client 每次尝试前发出；里程碑事件
+  （plan_ready/approve/decide/…）持久打印不刷掉。rich 缺失时退化为 `
+`
+  单行刷新。订阅者异常被 EventLog 吞掉，显示永不打断闭环。
+- **plan_doc.py**：`render_plan_markdown`（台账对象→markdown，含步骤/输入
+  yaml/预期输出/风险/diff/critic 结论与 blocker 标记）+ `save_plan_doc`（写
+  `plans/plan_vN.md`）+ `split_user_notes`（编辑后文档拆正文与"修改意见"节）。
+- **session.py `qresearch` 命令**（`[project.scripts]` 入口，`[ui]` extra）：
+  REPL 会话——自然语言问题确认后调 `run_research_loop(auto_approve=False,
+  round_callback=…)`；斜杠命令 /projects /status /report /plots /pause /resume
+  /quit；轮末交互点自由输入=意见、stop=叫停；Ctrl+C 一次=轮末优雅停
+  （`stop_requested` → 回调返回 "stop"），两次=立即中断（台账安全，可 resume）。
+  单线程 + 终端 typeahead：实验执行期间敲的字在下一个交互点被读，无需并发。
+  会话只把你的话路由成**参数/反馈/命令**，研究决策仍在七站点闭环里。
+
+### 11.6 恢复（真相在库里）
 
 ```python
 resume_research_loop(client, storage, event_log, project_id, *, rounds=3, ...)

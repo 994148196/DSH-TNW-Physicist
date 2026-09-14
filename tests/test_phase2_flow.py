@@ -85,7 +85,7 @@ def test_interactive_approval_revise_then_approve(
     responses["critic"] = ['{"verdict": "pass", "issues": []}'] * 2
     client = make_scripted_client(responses)
 
-    answers = iter(["c", "只保留基准步骤，去掉对照步骤", "y"])
+    answers = iter(["c", "只保留基准步骤，去掉对照步骤", "", "y"])  # 空行结束多行意见
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     plan = run_planning_phase(client, storage, log, "proj_rev",

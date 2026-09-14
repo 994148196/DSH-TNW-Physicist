@@ -10,7 +10,7 @@ from qresearch.core.events import Event, EventLog
 from qresearch.core.models import Decision, Evidence, Goal, Hypothesis, PlanStep, ResearchPlan
 from qresearch.core.status import Actor, DecisionRecommendation, DecisionType, EvidenceType
 from qresearch.dsh_client import DSHClient
-from .prompts import ACTIONS, ANALYZE, CRITIC, DECIDE, HYPOTHESIZE, PLAN, UNDERSTAND, actions_text, tools_text
+from .prompts import ACTIONS, ANALYZE, CRITIC, DECIDE, HYPOTHESIZE, PLAN, TRANSCRIBE, UNDERSTAND, actions_text, tools_text
 from .schemas import (
     AnalyzeOutput, CritiqueOutput, DecideOutput, HypothesizeOutput, PlanOutput, UnderstandOutput,
 )
@@ -81,6 +81,42 @@ def hypothesize(
     ]
 
 
+def _known_tools() -> set[str]:
+    """注册工具名集合（延迟导入避免环）。"""
+    from qresearch.tools.registry import load_seed_tools, tool_names as registered_tools
+
+    load_seed_tools()
+    return set(registered_tools())
+
+
+def _validate_plan_steps(out: PlanOutput) -> None:
+    from qresearch.experiments.manager import RUNNABLE_ACTIONS
+
+    known_tools = _known_tools()
+    for s in out.steps:
+        # tools 字段填的是注册工具名，不是动作名
+        unknown = [t for t in s.tools if t not in known_tools]
+        if unknown:
+            raise ValueError(
+                f"步骤（{s.purpose}）的 tools {unknown} 未注册；"
+                f"tools 只能从注册工具清单中选择：{sorted(known_tools)}"
+            )
+        # 可执行实验动作必须恰好引用 1 个注册工具
+        if s.action in RUNNABLE_ACTIONS and len(s.tools) != 1:
+            raise ValueError(
+                f"步骤（{s.purpose}）动作 {s.action} 必须恰好引用 1 个注册工具"
+                f"（实际 {len(s.tools)}）；如需两工具交叉验证，请拆成两个并行步骤"
+                f"（各引用一个工具、相同输入），对比在分析阶段进行"
+            )
+        # 扫描步骤必须声明 inputs.scan = {参数名: [取值...]}
+        if s.action == "parameter_scan" and not isinstance(s.inputs.get("scan"), dict):
+            raise ValueError(
+                f"步骤（{s.purpose}）声明 parameter_scan 但缺 inputs.scan；"
+                "若该步只做一次计算，请把动作改为 run_experiment（inputs 平铺）；"
+                "若确为参数扫描，scan 应为 {参数名: [取值列表]}，标量参数平铺"
+            )
+
+
 def make_plan(
     client: DSHClient,
     project_id: str,
@@ -105,36 +141,6 @@ def make_plan(
             f"\n这是对 v{previous.version} 的修订。当前上一版计划：\n{_plan_digest(previous)}"
             f"\ndiff_summary 必须概述与上一版的差异（改了哪些步骤、为什么）。"
         )
-    from qresearch.experiments.manager import RUNNABLE_ACTIONS
-    from qresearch.tools.registry import load_seed_tools, tool_names as registered_tools
-
-    load_seed_tools()
-    known_tools = set(registered_tools())
-
-    def _check_tools(out: PlanOutput) -> None:
-        for s in out.steps:
-            # tools 字段填的是注册工具名，不是动作名
-            unknown = [t for t in s.tools if t not in known_tools]
-            if unknown:
-                raise ValueError(
-                    f"步骤（{s.purpose}）的 tools {unknown} 未注册；"
-                    f"tools 只能从注册工具清单中选择：{sorted(known_tools)}"
-                )
-            # 可执行实验动作必须恰好引用 1 个注册工具
-            if s.action in RUNNABLE_ACTIONS and len(s.tools) != 1:
-                raise ValueError(
-                    f"步骤（{s.purpose}）动作 {s.action} 必须恰好引用 1 个注册工具"
-                    f"（实际 {len(s.tools)}）；如需两工具交叉验证，请拆成两个并行步骤"
-                    f"（各引用一个工具、相同输入），对比在分析阶段进行"
-                )
-            # 扫描步骤必须声明 inputs.scan = {参数名: [取值...]}
-            if s.action == "parameter_scan" and not isinstance(s.inputs.get("scan"), dict):
-                raise ValueError(
-                    f"步骤（{s.purpose}）声明 parameter_scan 但缺 inputs.scan；"
-                    "若该步只做一次计算，请把动作改为 run_experiment（inputs 平铺）；"
-                    "若确为参数扫描，scan 应为 {参数名: [取值列表]}，标量参数平铺"
-                )
-
     out = client.call_station(
         "plan", project_id, PlanOutput,
         PLAN.format(
@@ -144,7 +150,7 @@ def make_plan(
             user_notes=user_notes or "（无）",
             diff_instruction=diff_instruction,
         ),
-        retries=retries, event_log=event_log, validator=_check_tools,
+        retries=retries, event_log=event_log, validator=_validate_plan_steps,
     )
     steps = [
         PlanStep(
@@ -235,6 +241,56 @@ def plan_with_critic(
         )
     assert critique_out is not None
     return plan, critique_out
+
+
+def transcribe_plan(
+    client: DSHClient,
+    project_id: str,
+    goal: Goal,
+    edited_markdown: str,
+    previous: ResearchPlan, *,
+    user_notes: str = "",
+    event_log: EventLog | None = None,
+    retries: int = 1,
+) -> ResearchPlan:
+    """把用户直接编辑的计划文档转录回结构化计划（Phase 9.2 编辑通道）。
+
+    转录只是"用户意图的结构化"：产物随后仍要过语义校验（validator）、
+    critic 独立审查与最终审批——用户编辑不绕过验证管线。
+    """
+    out = client.call_station(
+        "transcribe", project_id, PlanOutput,
+        TRANSCRIBE.format(
+            previous_plan=_plan_digest(previous),
+            edited_markdown=edited_markdown[:12000],
+            user_notes=user_notes or "（无）",
+            actions=actions_text(), tools=tools_text(),
+        ),
+        retries=retries, event_log=event_log, validator=_validate_plan_steps,
+    )
+    steps = [
+        PlanStep(
+            step_id=f"step_{i}",
+            action=s.action, purpose=s.purpose, tools=s.tools,
+            inputs=s.inputs, expected_outputs=s.expected_outputs,
+            requires_approval=s.requires_approval,
+        )
+        for i, s in enumerate(out.steps, start=1)
+    ]
+    plan = ResearchPlan(
+        project_id=project_id, goal_id=goal.goal_id, version=previous.version + 1,
+        steps=steps, risks=out.risks,
+        diff_summary=out.diff_summary or "按用户编辑的计划文档转录",
+        based_on_decision=previous.based_on_decision,
+    )
+    if event_log is not None:
+        event_log.append(Event(
+            actor=Actor.MODEL, action="plan_transcribed", project_id=project_id,
+            object_type="ResearchPlan", object_id=plan.plan_id,
+            detail={"version": plan.version, "from": previous.plan_id,
+                    "n_steps": len(steps)},
+        ))
+    return plan
 
 
 # ================================================================ ANALYZE

@@ -23,8 +23,9 @@ def test_call_station_parses_and_logs(tmp_path):
     client = DSHClient(runner=lambda p, s: VALID_UNDERSTAND)
     out = client.call_station("understand", "p1", UnderstandOutput, "prompt", event_log=log)
     assert out.refined_question == "q"
-    assert [e.action for e in log.events(project_id="p1")] == ["station_call"]
-    assert log.events()[0].actor == Actor.MODEL
+    # P9：站点开始调用先发 station_started（进度条数据源），成功后 station_call
+    assert [e.action for e in log.events(project_id="p1")] == ["station_started", "station_call"]
+    assert log.events()[-1].actor == Actor.MODEL
 
 
 def test_call_station_retries_with_error_feedback():
@@ -122,7 +123,9 @@ def test_call_station_retries_on_runtime_failure(monkeypatch, tmp_path):
     assert out.refined_question == "q"
     assert calls["n"] == 2
     actions = [e.action for e in log.events(project_id="p1")]
-    assert actions == ["station_retry", "station_call"]
+    # station_started 每次尝试各发一条（两次尝试）
+    assert actions == ["station_started", "station_retry",
+                       "station_started", "station_call"]
     assert log.events()[0].actor == Actor.SYSTEM
 
 

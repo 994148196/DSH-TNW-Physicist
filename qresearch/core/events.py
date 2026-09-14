@@ -29,15 +29,25 @@ class EventLog:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._subscribers: list = []  # 显示层钩子（Progress 等）；不写账，异常不外泄
 
     @property
     def path(self) -> Path:
         return self._path
 
+    def subscribe(self, callback) -> None:
+        """注册订阅者：append 时同步回调 Event。订阅者异常被吞（显示层永不干扰记账）。"""
+        self._subscribers.append(callback)
+
     def append(self, event: Event) -> Event:
         line = event.model_dump_json()
         with self._lock, self._path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+        for cb in self._subscribers:
+            try:
+                cb(event)
+            except Exception:  # noqa: BLE001 —— 显示层问题不许打断研究闭环
+                pass
         return event
 
     def events(self, project_id: str | None = None) -> list[Event]:

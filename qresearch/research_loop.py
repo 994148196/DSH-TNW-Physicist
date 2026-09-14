@@ -23,6 +23,7 @@ from qresearch.core.status import Actor, PlanStatus, VerificationStatus
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient, NeedsHuman
 from qresearch.loop import _interactive_approval, approve_plan
+from qresearch.ui.plan_doc import save_plan_doc
 from .stations.executors import analyze, decide, hypothesize, plan_with_critic, understand
 
 
@@ -317,15 +318,22 @@ def _rounds_loop(
                                    detail={"version": plan.version, "verdict": critique.verdict,
                                            "round": round_no,
                                            "issues": [i.model_dump() for i in critique.issues]}))
-            # ---- 审批（人工触点 1）
+            # ---- 审批（人工触点 1）；计划文档每版都存 plans/（含 auto 存档）
+            plan_doc_dir = Path(storage.path).parent
             if auto_approve:
                 approve_plan(storage, event_log, plan, actor=Actor.SYSTEM,
                              note="auto-approve（演示/测试用，非人工）")
+                save_plan_doc(plan_doc_dir, plan, goal=state.goal,
+                              hypotheses=state.hypotheses,
+                              critique_verdict=critique.verdict,
+                              critique_issues=[i.model_dump() for i in critique.issues])
             else:
                 plan = _interactive_approval(
                     storage, event_log, plan, client=client,
                     goal=state.goal, hypotheses=state.hypotheses,
-                    retries=retries)
+                    retries=retries, plan_doc_dir=plan_doc_dir,
+                    critique_verdict=critique.verdict,
+                    critique_issues=[i.model_dump() for i in critique.issues])
             if plan.status != PlanStatus.APPROVED:
                 return {"status": "plan_rejected", "round": round_no, "plan_id": plan.plan_id}
 

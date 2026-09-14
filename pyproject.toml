@@ -18,6 +18,10 @@ dependencies = [
 dev = ["pytest>=8.0"]
 tensor = ["quimb>=1.10"]
 viz = ["matplotlib>=3.8"]
+ui = ["rich>=13"]
+
+[project.scripts]
+qresearch = "qresearch.ui.session:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["qresearch"]

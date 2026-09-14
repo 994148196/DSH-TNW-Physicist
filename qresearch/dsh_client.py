@@ -199,6 +199,12 @@ class DSHClient:
         last_err: Exception | None = None
         for attempt in range(retries + 1):
             session_id = f"{project_id}:{station}:a{attempt}"
+            if event_log is not None:
+                event_log.append(Event(
+                    actor=Actor.SYSTEM, action="station_started",
+                    project_id=project_id, object_type="station", object_id=station,
+                    detail={"attempt": attempt},
+                ))
             try:
                 last_text = self._run(full, session_id)
             except Exception as e:  # noqa: BLE001 —— runtime 层失败（超时重启/
