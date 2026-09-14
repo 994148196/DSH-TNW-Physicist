@@ -210,5 +210,11 @@
 
 ### 2026-09-14（文档化）
 - **README + 双文档完成**：`README.md`（入口索引 + 功能总览）；`docs/user_guide.md`（使用者指南：安装、快速上手、四个真实案例——Heisenberg live 研究 / tfim_ed 构建 / 跨项目记忆 / 运维操作——读懂输出、FAQ）；`docs/manual.md`（技术手册：架构、五条铁律、13 个台账对象、六站点、三层验证、证据资格门、Tool Builder 防串通、研究记忆、HPC/编排、配置、设计权衡备忘）。
+
+### 2026-09-14（首个仓库外完整研究项目：TFIM 临界标度 + 中心荷提取）
+- **完整研究示例 PASS**（`D:\AI\Agent\Try\research-projects\tfim_cft_scaling\`，仓库外目录，数据与代码分离）：题目"TFIM 临界点 h/J=1 基态能量密度有限尺寸标度 + CFT 中心荷提取"。3 轮 ~18 分钟，status=terminated，决策链 iterate→iterate→accept（预算 3/3 收敛），68 实验（tfim_ed 21 / simple_ed 22 / dmrg 25，max_parallel=4），290 条证据，记忆库蒸馏 50 条（failure 40）。
+- **物理结论**（全部可回放）：① ED 与精确 Jordan-Wigner 解析式 E0(N)=−2/sin(π/2N) 机器精度一致（≤4e-15），gap 与 2tan(π/4N) 一致——分析自主发现该解析式并用作交叉验证；② e∞=−1.2732178 vs −4/π 偏差 2.18e-5（判据 1e-3）；③ 标度幂次 p=2.006（7 尺寸），1/N² 系数 a=−0.5235862 vs −π/6 偏差 0.0024%，双项拟合恢复 1/N⁴ 系数 b 与解析 −7π³/1440 偏差 0.97%；④ **中心荷 c∈[0.5034, 0.5166]**（Ising 普适类 c=1/2），全部落在预设 [0.40,0.60]。
+- 决策质量：R1 iterate 自主识别三个决定性缺口（尺寸不全/平凡窗口/跨工具交叉验证失败——simple_ed 被误用于 TFIM 对照，分析层当场发现并弃用）；R2 iterate 要求补 N=20 杠杆点、系统误差量化、c 置信区间；R3 在预算耗尽时就地收敛并给出 accept。dmrg_adapter 本机缺陷再次复现（25 次使用多数失败，如实入库）。
+- 运行采用 auto_approve=True（actor=system 留痕"非人工"）；最终 accept 决策 requires_human=True——**结论确认留给用户**。
 - 已获授权持续开发（无需逐项审批）。
 - **待办：DSH 站内 agent 的写入沙箱**——DSH runtime 以 `cwd=项目根` 运行，站内 agent 会自行在仓库写草稿脚本（Phase 2 演示期间产生了 `ed_heis.py`/`corr_heis.py`，已移入 `research_data/demo_phase2/sandbox/` 存档）。实验层已隔离（`research_data/experiments/<exp_id>/`），但 DSH 站点调用的 `cwd` 仍指向项目根；应在 dsh_client/loop 层为每项目设沙箱目录。
