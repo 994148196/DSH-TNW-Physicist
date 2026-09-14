@@ -19,7 +19,8 @@ from pathlib import Path
 from qresearch.core.budget import Budget
 from qresearch.core.events import Event, EventLog
 from qresearch.core.models import Experiment, Project
-from qresearch.core.status import Actor, PlanStatus, VerificationStatus
+from qresearch.core.status import (Actor, ApprovalChannel, PlanStatus,
+                                    VerificationStatus)
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient, NeedsHuman
 from qresearch.engine import ResearchEngine
@@ -89,7 +90,8 @@ def _rounds_loop(
             plan_doc_dir = Path(storage.path).parent
             if auto_approve:
                 approve_plan(storage, event_log, plan, actor=Actor.SYSTEM,
-                             note="auto-approve（演示/测试用，非人工）")
+                             note="auto-approve（演示/测试用，非人工）",
+                             channel=ApprovalChannel.SYSTEM_AUTO)
                 save_plan_doc(plan_doc_dir, plan, goal=state.goal,
                               hypotheses=state.hypotheses,
                               critique_verdict=critique.verdict,

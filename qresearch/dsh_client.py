@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -23,7 +24,17 @@ T = TypeVar("T", bound=BaseModel)
 # runner 协议：(prompt, session_id) -> 模型回复文本
 Runner = Callable[[str, str], str]
 
-GLOBAL_DSH_HOME = ROOT / "research_data" / "dsh_home"
+#: 站点 runtime 使用的 DSH home（凭据与站点会话都从这里读）。
+#:
+#: 默认是仓库内的隔离 home。但 DSH 的 MCP 客户端**有意**把子进程环境里"凭据形状"
+#: 的变量全部擦掉（见 @deepseek-ai/dsh-mcp-client 的 buildChildEnv：scrubbedParentEnv
+#: + 显式 env）——所以经 MCP 启动的 qresearch 服务**永远拿不到** DEEPSEEK_API_KEY，
+#: 站点 runtime 会以 MISSING_CREDENTIAL 失败。绕开方式不是把密钥再抄一份进配置，
+#: 而是用 QRESEARCH_DSH_HOME 指向**已有凭据的那个 home**（只传路径，不传秘密），
+#: 让站点 runtime 复用同一个凭据服务。
+GLOBAL_DSH_HOME = Path(
+    os.environ.get("QRESEARCH_DSH_HOME") or (ROOT / "research_data" / "dsh_home")
+)
 
 SCHEMA_INSTRUCTION = (
     "\n\n输出要求：只输出一个 JSON 对象，不要输出任何其他文字、解释或代码围栏。"
@@ -50,6 +61,44 @@ class NeedsHuman(RuntimeError):
 # （P8 live 实测：runner 断链后等待悬挂 >17 分钟才由 runtime 侧超时兜底）。
 # 有界超时 + 重启 runtime 把"可能永远卡死"变成"确定性失败 + 重试"。
 DEFAULT_STATION_TIMEOUT_S = 15 * 60
+
+
+#: 这些 runtime 报错码属于配置/凭据类故障——重试永远不会成功，
+#: 必须立刻把原因抬给人看，而不是空转三轮后报"回复里没有 JSON"。
+FATAL_RUNTIME_CODES = frozenset({
+    "MISSING_CREDENTIAL", "INVALID_CREDENTIAL", "UNAUTHORIZED", "FORBIDDEN",
+    "QUOTA_EXCEEDED", "INSUFFICIENT_BALANCE", "MODEL_NOT_FOUND",
+})
+
+
+class StationRuntimeError(RuntimeError):
+    """runtime 侧明确报错（``finish_reason == "error"``）。
+
+    典型来源：缺 API key、凭据无效、配额耗尽、模型名不存在。这些是配置故障，
+    不是"模型输出不合法"——``fatal=True`` 表示重试无意义，``call_station``
+    会立刻转 NeedsHuman 并带上 runtime 的原文。
+    """
+
+    def __init__(self, message: str, *, code: str = "", fatal: bool = False):
+        self.code = code
+        self.fatal = fatal
+        super().__init__(f"runtime 报错（{code or 'unknown'}）：{message}")
+
+
+def _runtime_failure(events) -> tuple[str, str]:
+    """从事件流里挖出 runtime 的报错码与原文（``finish_reason=error`` 时）。
+
+    错误藏在最后一个 ``turn/end`` 的 ``data.reason.error`` 里；SDK 的 RunResult
+    只把 ``finish_reason`` 暴露成 "error"，细节全在 events 中。
+    """
+    for event in reversed(list(events or [])):
+        if event.get("type") != "turn/end":
+            continue
+        reason = (event.get("data") or {}).get("reason") or {}
+        err = reason.get("error")
+        if isinstance(err, dict):
+            return str(err.get("code") or ""), str(err.get("message") or "")
+    return "", "runtime 以 error 结束，但事件流里没有给出原因"
 
 
 class StationTimeout(RuntimeError):
@@ -98,6 +147,10 @@ class DSHClient:
     ):
         self._runner = runner
         self._harness = None
+        # 会话命名：每次 call_station 必须拿到全新的会话 id，见 call_station 注释。
+        # 实例级随机前缀（跨进程唯一）+ 实例内递增计数（实例内唯一）。
+        self._session_nonce = uuid.uuid4().hex[:8]
+        self._call_seq = 0
         # 超时优先级：显式参数 > 环境变量 > 默认
         configured = (station_timeout_s if station_timeout_s is not None
                       else os.environ.get("QRESEARCH_STATION_TIMEOUT_S"))
@@ -142,8 +195,7 @@ class DSHClient:
 
         def _work():
             try:
-                box["result"] = harness.run(
-                    prompt, session_id=session_id).final_response
+                box["result"] = harness.run(prompt, session_id=session_id)
             except BaseException as e:  # noqa: BLE001 —— 超时后由主线程路径兜底
                 box["error"] = e
 
@@ -157,7 +209,16 @@ class DSHClient:
             raise StationTimeout(session_id, self._timeout_s)
         if "error" in box:
             raise box["error"]
-        return box["result"]
+        result = box["result"]
+        # finish_reason=error 时 final_response 恒为空串。若不在此拦下，空串会一路
+        # 走到 extract_json 变成"回复中未找到 JSON 对象"——把"缺 API key"这类
+        # runtime 配置故障伪装成"模型输出不合法"，重试三轮也永远修不好，
+        # 且人工介入时看不到任何线索。必须把 runtime 的真实原因抬上来。
+        if getattr(result, "finish_reason", None) == "error":
+            code, message = _runtime_failure(getattr(result, "events", None))
+            raise StationRuntimeError(message, code=code,
+                                      fatal=code in FATAL_RUNTIME_CODES)
+        return result.final_response
 
     def close(self) -> None:
         if self._harness is not None:
@@ -192,13 +253,22 @@ class DSHClient:
         失败带错误反馈重试；耗尽抛 NeedsHuman（转人工）。
         `validator`：schema 通过后的领域校验（如"引用的实验必须通过验证"），
         抛 ValueError 视同校验失败。
+
+        会话 id 必须每次调用都**全新**。若只由 (project, station, attempt) 决定，
+        重复发起同一个站点调用（用户手滑重试一次 understand、脚本重跑、resume 后再跑）
+        就会撞上上次残留的会话，而 DSH 会**重放**该会话上一次的回复——一次畸形输出
+        于是被永久缓存：重试换 attempt 也逃不掉，只会一路 NeedsHuman，而人工介入后
+        再调同一个站点依旧拿到同一段非 JSON 文本。故 id 里加入实例级随机前缀与
+        调用序号（station 仍固定在第二段：`runner` 与既有工具靠它取站点名）。
         """
         base = prompt + SCHEMA_INSTRUCTION.format(schema=schema.model_json_schema())
         full = base
         last_text = ""
         last_err: Exception | None = None
+        call_tag = f"{self._session_nonce}c{self._call_seq}"
+        self._call_seq += 1
         for attempt in range(retries + 1):
-            session_id = f"{project_id}:{station}:a{attempt}"
+            session_id = f"{project_id}:{station}:{call_tag}:a{attempt}"
             if event_log is not None:
                 event_log.append(Event(
                     actor=Actor.SYSTEM, action="station_started",
@@ -219,6 +289,11 @@ class DSHClient:
                         detail={"attempt": attempt,
                                 "error": f"{type(e).__name__}: {e}"},
                     ))
+                if isinstance(e, StationRuntimeError) and e.fatal:
+                    # 配置/凭据类故障（缺 API key、配额耗尽、模型名不存在……）：
+                    # 换 session 重试没有任何意义，立刻转人工并把 runtime 原文带出去，
+                    # 免得把配置故障伪装成"模型输出不合法"。
+                    raise NeedsHuman(station, "", str(e)) from e
                 continue
             try:
                 out = schema.model_validate_json(extract_json(last_text))

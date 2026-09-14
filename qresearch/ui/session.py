@@ -319,8 +319,11 @@ class Session:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # 审批台子命令（A1：actor=HUMAN 审批事件的唯一写入口，TTY 守卫）优先分发
-    if argv and argv[0] in ("approvals", "approve", "reject", "conclude"):
+    # 审批台子命令（A1：actor=HUMAN 审批事件的写入口）优先分发。
+    # approvals/approve/reject/conclude 走 TTY 通道；approvals-web 走 localhost
+    # 浏览器通道（保真度较低，台账如实记录 channel）。MCP 侧只查台账，不代写。
+    if argv and argv[0] in ("approvals", "approve", "reject", "conclude",
+                            "approvals-web"):
         from qresearch.ui import approvals
 
         return approvals.main(argv)

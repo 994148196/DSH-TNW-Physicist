@@ -174,9 +174,13 @@ dsh --profile research
 两条硬边界（agent 自己批不了、也宣布不了结论）：
 
 - **审批**：`plan_approve` 是纯查询——只查台账里有没有 `actor=HUMAN` 的
-  批准事件。写批准只能由你在真实终端运行 `qresearch approve|reject`。
+  批准事件。写批准只能由你执行：真实终端 `qresearch approve|reject`（TTY），
+  或 `qresearch approvals-web --data-root <projects_root>` 起一个 localhost
+  审批页在浏览器里点（**保真度较低**：凭据与 agent 同信任域，台账如实记
+  `channel=webui-local`，报告单列标注；只监听回环地址）。
 - **结论**：`decide` 的 declare_result/terminate 一律 `requires_human=true`，
-  确认只经 `qresearch conclude <dir> <decision_id>`（幂等，报告转 concluded）。
+  确认经 `qresearch conclude <dir> <decision_id>`（TTY）或 approvals-web 页面
+  （幂等，报告转 concluded 并标注取得通道）。
 
 其他要点：
 

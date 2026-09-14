@@ -24,7 +24,8 @@ from qresearch.core.models import (
     Decision, Evidence, Experiment, Goal, Hypothesis, Project, ResearchPlan, ToolRecord,
     VerificationReport,
 )
-from qresearch.core.status import Actor, ExperimentStatus, PlanStatus, VerificationStatus
+from qresearch.core.status import (Actor, ApprovalChannel, ExperimentStatus,
+                                    PlanStatus, VerificationStatus)
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient
 from .jobs import JobManager
@@ -65,17 +66,38 @@ def _hypothesis_fate_line(h) -> str:
     return f"- {h.statement} → **{fate}**\n  - 证伪试验：{'；'.join(h.falsification_tests)}"
 
 
+#: 各审批通道的保真度说明（写进报告，供读的人折价）。
+_CHANNEL_FIDELITY = {
+    "tty": "进程持有控制终端——agent 起的子进程结构性拿不到，保真度最高",
+    "webui-local": "同机 localhost 浏览器点击——凭据落在 agent 同用户可读的信任域内，"
+                   "本地进程理论上可自行完成同一请求，**保真度较低**",
+    "system-auto": "system 代行（auto_approve 演示模式）——**非人工**",
+    "未记录": "本字段引入前的历史事件，通道未记录——**不得反推为 tty**",
+}
+
+
+def _conclude_channel_line(channel: str) -> str:
+    note = _CHANNEL_FIDELITY.get(channel, "未知通道")
+    return f"- **结论确认通道**：`{channel}`（{note}）"
+
+
 def _summary_section(project: Project, status: str, hypotheses: list,
                      decisions: list, experiment_rows: list[dict],
-                     all_evidence: list) -> list[str]:
+                     all_evidence: list,
+                     conclude_channel: str | None = None) -> list[str]:
     """研究总结（置顶）：最终状态 / 结论 / 关键证据 / 假设命运 / 规模统计。
 
     全部内容确定性来自台账（铁律：LLM 只提议，代码记账）——结论正文取自
     收束决策的 rationale 原文，证据逐条挂 id 可回放。
+
+    conclude_channel：结论确认的取得通道（None = 尚未确认）。渲染成独立一行，
+    使"这次批准经由较低保真度通道"对读报告的人可见，而不是被 actor=HUMAN 抹平。
     """
     rec_chain = " → ".join(d.recommendation.value for d in decisions) or "（无决策）"
     lines = ["## 研究总结", "", f"- **最终状态**：`{status}`（{len(decisions)} 轮；"
              f"决策链 {rec_chain}）"]
+    if conclude_channel is not None:
+        lines.append(_conclude_channel_line(conclude_channel))
     final = decisions[-1] if decisions else None
     concluded = final is not None and (
         final.type.value == "declare_result"
@@ -141,6 +163,7 @@ def generate_report(
     status: str = "terminated",
     plan_notes: dict | None = None,
     all_evidence: list | None = None,
+    conclude_channel: str | None = None,
 ) -> str:
     """生成 markdown 研究报告：置顶研究总结 + 计划版本历史；结论全部可追溯。"""
     all_evidence = all_evidence or []
@@ -153,7 +176,8 @@ def generate_report(
         "",
     ]
     lines += _summary_section(project, status, hypotheses, decisions,
-                              experiment_rows, all_evidence)
+                              experiment_rows, all_evidence,
+                              conclude_channel=conclude_channel)
     lines += [
         "## 假设",
         *[f"- {h.statement}\n"
@@ -342,20 +366,28 @@ class ResearchEngine:
                                     object_id=plan.plan_id, detail=detail))
         return plan, critique
 
-    def plan_approve(self, plan_id: str, *, actor: Actor, note: str = "") -> ResearchPlan:
+    def plan_approve(self, plan_id: str, *, actor: Actor, note: str = "",
+                     channel: ApprovalChannel = ApprovalChannel.UNSPECIFIED,
+                     ) -> ResearchPlan:
         """批准计划（写 approve 事件）。actor 由调用方负责——人工审批的强制入口
-        在 CLI 审批台（A1，M2 起），MCP 层只查台账不写 actor=HUMAN。"""
+        在 CLI 审批台（A1，M2 起）；MCP 层只查台账不写 actor=HUMAN。
+        channel 记录审批取得通道（保真度审计）：人工通道必须由 approvals/approvals-web
+        显式传入，MCP 侧不得声明 TTY。"""
         from .loop import approve_plan  # 延迟导入：loop.py 反向依赖引擎入口
 
         plan = self._require(plan_id, ResearchPlan)
-        approve_plan(self.storage, self.event_log, plan, actor=actor, note=note)
+        approve_plan(self.storage, self.event_log, plan, actor=actor, note=note,
+                     channel=channel)
         return self.storage.get(ResearchPlan, plan_id)
 
-    def plan_reject(self, plan_id: str, *, actor: Actor, note: str = "") -> ResearchPlan:
+    def plan_reject(self, plan_id: str, *, actor: Actor, note: str = "",
+                    channel: ApprovalChannel = ApprovalChannel.UNSPECIFIED,
+                    ) -> ResearchPlan:
         from .loop import reject_plan
 
         plan = self._require(plan_id, ResearchPlan)
-        reject_plan(self.storage, self.event_log, plan, actor=actor, note=note)
+        reject_plan(self.storage, self.event_log, plan, actor=actor, note=note,
+                    channel=channel)
         return self.storage.get(ResearchPlan, plan_id)
 
     # -------------------------------------------------- 执行与验证
@@ -518,13 +550,22 @@ class ResearchEngine:
 
     # -------------------------------------------------- 只读与产出
     def status(self, project_id: str) -> dict:
-        """项目状态投影（只读）：MCP 会话开始时先调它对齐（D1）。"""
+        """项目状态投影（只读）：MCP 会话开始时先调它对齐（D1）。
+
+        每个决策同时给出 ``requires_human``（是否必须人工）与
+        ``confirmed_by_human`` + ``channel``（人工是否**真的**确认了、经由哪条通道）。
+        两者不是一回事：``requires_human=True`` 而 ``confirmed_by_human=False``
+        表示结论尚未被确认，agent 不得据此宣布成立。
+        """
         st = self.state(project_id)
         self._sync_state_from_ledger(project_id, st)
         experiments = self.storage.list(Experiment, project_id=project_id)
         decisions = st.all_decisions
         plans = self._plans(project_id)
         latest = plans[-1] if plans else None
+        concluded = {e.object_id: (e.detail.get("channel") or "未记录")
+                     for e in self.event_log.events(project_id=project_id)
+                     if e.action == "conclude"}
         return {
             "project_id": project_id,
             "question": self._question(project_id),
@@ -552,9 +593,13 @@ class ResearchEngine:
                                         if e.verification_status
                                         == VerificationStatus.PASSED),
             "evidence": len(st.all_evidence),
+            "conclusion_channel": self.conclude_channel(project_id),
             "decisions": [{"decision_id": d.decision_id, "type": d.type.value,
                            "recommendation": d.recommendation.value,
-                           "requires_human": d.requires_human} for d in decisions],
+                           "requires_human": d.requires_human,
+                           "confirmed_by_human": d.decision_id in concluded,
+                           "channel": concluded.get(d.decision_id)}
+                          for d in decisions],
         }
 
     def events(self, project_id: str, *, since: int = 0, limit: int = 200) -> list[dict]:
@@ -577,6 +622,19 @@ class ResearchEngine:
         return [r for r in rows
                 if all(r.get(k) == v for k, v in filters.items())]
 
+    def conclude_channel(self, project_id: str) -> str | None:
+        """该项目 conclude 事件的取得通道；None = 尚无 conclude 事件。
+
+        保真度审计（A1 补充）：通道是台账的一等事实，报告与状态投影都要显示它，
+        使"经由较低保真度通道批准"这件事对读报告的人可见，而不是被 actor=HUMAN
+        三个字抹平。本字段引入前的历史事件没有 channel，返回 "未记录"——
+        明确不等于 tty，不得反推。
+        """
+        for e in self.event_log.events(project_id=project_id):
+            if e.action == "conclude":
+                return e.detail.get("channel") or "未记录"
+        return None
+
     def report_generate(self, project_id: str, *, state: _LoopState | None = None,
                         status: str | None = None) -> Path:
         """生成/刷新报告（确定性拼装，置顶总结 + 计划版本历史）并落账事件。
@@ -584,16 +642,17 @@ class ResearchEngine:
         state：轮内驱动的进程内累计（含本轮 analyses）；缺省从台账重建
         （analyses 不落账——与 resume 行为一致，报告如实缺该节）。
         status：缺省从台账推导——存在 actor=HUMAN 的 conclude 事件为
-        "concluded"（D6 人工确认结论），否则 "terminated"。
+        "concluded"（D6 人工确认结论），否则 "terminated"。取得该确认的**通道**
+        另经 conclude_channel 渲染在总结里（保真度审计：TTY 与较低保真度的
+        webui-local 必须可区分，见 ApprovalChannel）。
         """
         st = state or self.state(project_id)
         if st.goal is None or not st.all_decisions:
             self._sync_state_from_ledger(project_id, st)
         project = self._require(project_id, Project)
+        channel = self.conclude_channel(project_id)
         if status is None:
-            status = ("concluded" if any(e.action == "conclude"
-                                         for e in self.event_log.events(project_id=project_id))
-                      else "terminated")
+            status = "concluded" if channel is not None else "terminated"
         plans = self._plans(project_id)
         plan_notes: dict[str, dict] = {}
         for e in self.event_log.events(project_id=project_id):
@@ -607,7 +666,8 @@ class ResearchEngine:
         report_md = generate_report(
             project, st.goal, st.hypotheses, plans, st.all_rows,
             st.all_decisions, st.all_analyses, status=status,
-            plan_notes=plan_notes, all_evidence=st.all_evidence)
+            plan_notes=plan_notes, all_evidence=st.all_evidence,
+            conclude_channel=channel)
         report_path = Path(self.storage.path).parent / "report.md"
         report_path.write_text(report_md, encoding="utf-8")
         self.event_log.append(Event(actor=Actor.SYSTEM, action="report_generated",

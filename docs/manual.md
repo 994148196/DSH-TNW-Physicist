@@ -625,6 +625,23 @@ qresearch approvals list <data_root>         # 只读：列出各项目待审批
 `_require_tty` fail-closed：stdin 非 TTY 一律拒绝（rc=2）——批准这种事只能
 发生在有人的终端里（本仓库测试 harness 有 pty 属例外，L3 live 走查实证）。
 
+**审批通道与保真度审计**（2026-09-15 增补）：写路径收敛在 `ui/approval_ops.py`
+（`apply_approve/apply_reject/apply_conclude`，幂等；`_require_human_channel`
+结构性拒绝不代表人工在场的通道）。现有两条通道：
+
+| 通道 | 在场证明 | 保真度 |
+|---|---|---|
+| TTY（`approvals.py`） | `sys.stdin.isatty()`——agent 子进程结构性拿不到 | 最高 |
+| `webui-local`（`web_approvals.py`，`qresearch approvals-web`） | URL token + session cookie + CSRF，只监听回环 | **较低**：凭据与 agent 同一 OS 用户信任域 |
+
+每条 approve/reject/conclude 事件把通道写进 `detail.channel`
+（`core/status.py::ApprovalChannel`：tty / webui-local / system-auto / unspecified；
+历史事件读作"未记录"，不得反推为 tty）。`engine.status` 的每条决策新增
+`confirmed_by_human` + `channel`（与 `requires_human` 区分：前者是"人工**真的**
+确认了"）；报告置顶总结把 conclude 通道渲染成独立一行并附保真度说明——
+"经由较低保真度通道批准"对读报告的人可见，而不是被 `actor=HUMAN` 抹平。
+`plan_approve`（loop）缺省 channel=UNSPECIFIED，auto-approve 落 `system-auto`。
+
 ### 14.5 M3 运维补齐
 
 - **协作式取消**：`job_cancel` → `cancel_requested` → `experiments_run` 的

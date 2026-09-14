@@ -25,6 +25,9 @@ from pathlib import Path
 _ID_RE = re.compile(r"\b(proj|goal|hyp|step|plan|exp|evidence|dec|tool|vr)_[0-9a-f]{10}\b")
 _TS_RE = re.compile(r"_1\d{9}\b")
 _PATH_RE = re.compile(r"[\\/]")
+# DSHClient 会话 id 里的实例级随机段（<8 位 hex>c<调用序号>）——每次运行都不同，
+# 与时间戳同类，归一化掉（会话 id 含该段防 DSH 会话重放，2026-09 起）。
+_SESSION_TAG_RE = re.compile(r":[0-9a-f]{8}c\d+:a")
 _VOLATILE_KEYS = {"elapsed_s"}
 
 
@@ -32,6 +35,7 @@ def _norm_value(v):
     if isinstance(v, str):
         v = _ID_RE.sub("<id>", v)
         v = _TS_RE.sub("_<ts>", v)
+        v = _SESSION_TAG_RE.sub(":<tag>:a", v)
         if _PATH_RE.search(v):
             return "<path>"
         return v

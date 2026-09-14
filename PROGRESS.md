@@ -249,6 +249,18 @@
 - **M2 完成标志**：L2 离线断言全过（smoke + pytest 双通道）；L4 反例的 MCP 面种子已入测试（L4-1/2/4/6 对应 adhoc/结论/检查项语义；L4-3 留待 live，L4-5 引用校验在 decide validator）；**L3 待人工**：`dsh --profile research` 五步走查（见计划 §4.2 M2 检验 4）。
 
 
+### 2026-09-15（审批通道与保真度审计 + dsh_client 两处修复）
+- **动机**：日常使用中"批个计划/确认个结论都要去终端敲 y"太重——在**不放宽人工在场要求**的前提下，加一条便利通道，并用台账把两条通道的差别如实记账（不靠约定俗成）。
+- **`ApprovalChannel`（core/status.py）**：tty / webui-local / system-auto / unspecified 四级。核心事实：TTY 是**进程能力**（agent 子进程结构性拿不到），webui-local 的凭据（URL token+cookie+CSRF）与 agent 同一 OS 用户信任域——**保真度较低**，台账必须如实记录，不得与 TTY 等同。历史事件读作"未记录"，不得反推为 tty。
+- **`ui/approval_ops.py`（新）**：写路径唯一化——TTY 与浏览器两通道共用 `apply_approve/apply_reject/apply_conclude`（幂等、报告刷新）；`_require_human_channel` 结构性拒绝 system-auto/unspecified 写 actor=HUMAN（防伪造人工签字）。`pending_in_root/project` 只读待办（已被后续计划 `based_on_decision` 采纳的决策不再列为待办）。
+- **`ui/web_approvals.py`（新）**：`qresearch approvals-web`——localhost 审批页（决策卡含 checklist/rationale，计划卡含步骤/critic/blocker/diff），URL token 首次进入 + HttpOnly SameSite=Strict cookie + CSRF，**只许回环地址**（非回环拒绝启动）；页面自陈"较低保真度通道"。Windows 细节：POST 先排空请求体再回包（避免 403 时客户端看到连接重置）。
+- **`approvals.py` 重构**：TTY 路径行为不变（守卫 fail-closed + 显式 y），写操作改走 approval_ops（channel=tty）；`approvals list` 输出复用同一待办收集；编码安全打印（GBK 控制台不崩）。
+- **保真度对读者可见**：`engine.status` 每条决策新增 `confirmed_by_human` + `channel`（与 `requires_human` 区分）；报告置顶总结单列"结论确认通道"一行并附保真度说明；`plan_approve/reject` 落账 channel（auto-approve=system-auto，缺省=unspecified）。**MCP 面未动**：plan_approve 仍纯查询（actor=HUMAN 即视为已批，channel 随事件可查）。
+- **dsh_client 两处修复（L3 走查实战反馈）**：① runtime `finish_reason=error` 直抬为 `StationRuntimeError`，配置/凭据类错误码（缺 key/配额/模型不存在）立刻转 NeedsHuman 并带 runtime 原文——不再伪装成"回复里没有 JSON"空转三轮；② **会话 id 每次调用全新**（实例随机前缀+调用序号）：修复 DSH 对残留会话**重放旧回复**导致的"一次畸形输出被永久缓存"（重试/resume 也逃不掉）。
+- **L1 基线重采（A5 纪律）**：会话 id 新增随机段属**有意行为变更**——compare_events 归一化新增 `:<tag>:` 剥离（nonce 与时间戳同类）；phase2/phase5/phase8 基线重采（14/64/164 条，逐条 diff 确认差异仅为 session tag 与 approve 事件的 channel 字段）；resume 基线正交不动。
+- **测试 +14**：`tests/test_approval_channels.py`——结构性闸门拒非人工通道 / TTY 落账 channel=tty 且报告标注 / TTY 守卫不放松 / web token-cookie-CSRF 三重校验 / webui-local 落账+报告标注+幂等 / 批准与拒绝落账 / 非回环拒绝启动 / 空待办页 / 历史无 channel 事件不反推 tty / 未确认不出现通道行 / status 投影区分 required 与 confirmed / 待办收集与消失。全量 144 passed。
+
+
 ### 2026-09-14（计划 v3 M3：体验与运维补齐）
 - **协作式取消全栈**（jobs → engine → manager）：`JobManager.cancel_requested(job_id)`/`find_active(key)` 公开；`engine.experiments_run(cancel_check=)` 检查点直通 `ExperimentManager`——**准备段**（execute_plan 步骤循环与 scan 网格循环）取消即不再建账；**执行段**（_finish_prepared 串行与并行两路）已建账未执行的按取消落账：FAILED + `error="CancelledError: 人工取消（job_cancel），实验未执行"` + 事件标 `status=cancelled`（不引入 CANCELLED 状态：验证层对 FAILED 的处理天然适用）；**已在跑的照常完成**（协作式，不杀进程，不谎报）。`experiments_run_async` 回接 `cancel_requested` 形成 job_cancel → 检查点闭环；async 同 key 活跃时复用同一 job（幂等不重复提交）。
 - **plan_show markdown 卡片**：`render_plan_markdown(..., edit_hint=False)`——目标量/步骤表/风险/critic 结论与 blocker/diff_summary 渲染成 markdown 随 `plan_show.markdown` 返回（给 `dsh web` 直接渲染；编辑提示不属于 MCP 面）。

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from qresearch.core.events import Event, EventLog
 from qresearch.core.models import Goal, Hypothesis, ResearchPlan, utcnow
-from qresearch.core.status import Actor, PlanStatus
+from qresearch.core.status import Actor, ApprovalChannel, PlanStatus
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient
 from qresearch.engine import ResearchEngine
@@ -25,26 +25,32 @@ from .ui.plan_doc import save_plan_doc, split_user_notes
 def approve_plan(
     storage: Storage, event_log: EventLog, plan: ResearchPlan,
     *, actor: Actor, note: str = "",
+    channel: ApprovalChannel = ApprovalChannel.UNSPECIFIED,
 ) -> None:
+    """批准计划并落账。channel 记录审批**取得通道**（保真度审计，见 ApprovalChannel）：
+    调用方必须显式声明，缺省 UNSPECIFIED 表示"未记录"而非"等同 TTY"。"""
     plan.status = PlanStatus.APPROVED
     plan.updated_at = utcnow()
     storage.save(plan)
     event_log.append(Event(
         actor=actor, action="approve", project_id=plan.project_id,
-        object_type="ResearchPlan", object_id=plan.plan_id, detail={"note": note},
+        object_type="ResearchPlan", object_id=plan.plan_id,
+        detail={"note": note, "channel": channel.value},
     ))
 
 
 def reject_plan(
     storage: Storage, event_log: EventLog, plan: ResearchPlan,
     *, actor: Actor, note: str = "",
+    channel: ApprovalChannel = ApprovalChannel.UNSPECIFIED,
 ) -> None:
     plan.status = PlanStatus.REJECTED
     plan.updated_at = utcnow()
     storage.save(plan)
     event_log.append(Event(
         actor=actor, action="reject", project_id=plan.project_id,
-        object_type="ResearchPlan", object_id=plan.plan_id, detail={"note": note},
+        object_type="ResearchPlan", object_id=plan.plan_id,
+        detail={"note": note, "channel": channel.value},
     ))
 
 
@@ -115,11 +121,13 @@ def _interactive_approval(
         except (EOFError, KeyboardInterrupt):
             answer = "q"  # 无人在场/中断：绝不默认批准
         if answer.startswith("y"):
-            approve_plan(storage, event_log, plan, actor=Actor.HUMAN)
+            approve_plan(storage, event_log, plan, actor=Actor.HUMAN,
+                         channel=ApprovalChannel.TTY)
             print("已批准。")
             return plan
         if answer.startswith("q"):
-            reject_plan(storage, event_log, plan, actor=Actor.HUMAN, note="人工放弃/拒绝")
+            reject_plan(storage, event_log, plan, actor=Actor.HUMAN,
+                        note="人工放弃/拒绝", channel=ApprovalChannel.TTY)
             print("已放弃。可修正问题或假设后重新运行。")
             return plan
         if answer.startswith("s"):
@@ -230,7 +238,8 @@ def run_planning_phase(
 
     if auto_approve:
         engine.plan_approve(plan.plan_id, actor=Actor.SYSTEM,
-                            note="auto-approve（演示/测试用，非人工）")
+                            note="auto-approve（演示/测试用，非人工）",
+                            channel=ApprovalChannel.SYSTEM_AUTO)
         save_plan_doc(Path(storage.path).parent, plan, goal=state.goal,
                       hypotheses=state.hypotheses, critique_verdict=critique.verdict,
                       critique_issues=[i.model_dump() for i in critique.issues])

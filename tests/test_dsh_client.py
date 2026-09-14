@@ -51,6 +51,7 @@ def test_call_station_escalates_after_retries():
 
 
 def test_session_id_encodes_station_and_attempt():
+    """会话 id 契约：第二段是站点名（runner 与既有工具靠它取站点），末段是 attempt。"""
     sessions: list[str] = []
 
     def runner(prompt: str, session_id: str) -> str:
@@ -58,7 +59,44 @@ def test_session_id_encodes_station_and_attempt():
         return VALID_UNDERSTAND
 
     DSHClient(runner=runner).call_station("understand", "proj_x", UnderstandOutput, "p")
-    assert sessions[0] == "proj_x:understand:a0"
+    assert sessions[0].split(":")[1] == "understand", "站点名必须仍在第二段"
+    assert sessions[0].startswith("proj_x:understand:")
+    assert sessions[0].endswith(":a0")
+
+
+def test_repeated_station_call_gets_fresh_sessions():
+    """回归：重复调用同一站点不得复用会话 id。
+
+    复用会让 DSH **重放**上次回复——一次畸形输出被永久缓存，换 attempt 也逃不掉，
+    只会一路 NeedsHuman。真实踩过：understand 连续两次失败，第二次 0.04s 返回
+    （没发生 LLM 调用，只是重放）。
+    """
+    sessions: list[str] = []
+
+    def runner(prompt: str, session_id: str) -> str:
+        sessions.append(session_id)
+        return VALID_UNDERSTAND
+
+    client = DSHClient(runner=runner)
+    for _ in range(3):
+        client.call_station("understand", "proj_x", UnderstandOutput, "p")
+    assert len(set(sessions)) == 3, f"会话 id 被复用：{sessions}"
+
+
+def test_retry_attempts_within_one_call_stay_distinct():
+    """同一次调用内的重试仍要换 session，且与其它调用互不重叠。"""
+    sessions: list[str] = []
+
+    def runner(prompt: str, session_id: str) -> str:
+        sessions.append(session_id)
+        return "散文" if len(sessions) == 1 else VALID_UNDERSTAND
+
+    out = DSHClient(runner=runner).call_station(
+        "understand", "p1", UnderstandOutput, "p", retries=1)
+    assert out.quantities == ["E0"]
+    assert len(sessions) == 2
+    assert sessions[0].endswith(":a0") and sessions[1].endswith(":a1")
+    assert sessions[0].rsplit(":a", 1)[0] == sessions[1].rsplit(":a", 1)[0]
 
 
 # ================================================== 看门狗（runtime 挂起兜底）
@@ -141,3 +179,77 @@ def test_call_station_needs_human_when_runtime_always_fails(monkeypatch):
         client.call_station("understand", "p1", UnderstandOutput, "prompt",
                             retries=1)
     assert "ConnectionError" in str(exc.value)
+
+
+# ================================================== runtime 明确报错（finish_reason=error）
+class _ErrHarness:
+    """假 runtime：返回 finish_reason=error 的结果，错误藏在 turn/end 事件里。"""
+
+    def __init__(self, code: str, message: str):
+        self.code, self.message = code, message
+        self.calls = 0
+        self.closed = False
+
+    def run(self, prompt, session_id=None):
+        from types import SimpleNamespace
+
+        self.calls += 1
+        events = [{"type": "turn/end",
+                   "data": {"turn": 1,
+                            "reason": {"kind": "error",
+                                       "error": {"code": self.code,
+                                                 "message": self.message}}}}]
+        return SimpleNamespace(final_response="", finish_reason="error",
+                               events=events)
+
+    def close(self):
+        self.closed = True
+
+
+def _err_client(monkeypatch, harness) -> DSHClient:
+    def fake_create(self, dsh_home, cwd, model, **kw):
+        return harness, (dsh_home, cwd, model, kw)
+
+    monkeypatch.setattr(DSHClient, "_create_harness", fake_create)
+    return DSHClient(station_timeout_s=5)
+
+
+def test_runtime_error_is_surfaced_not_masked(monkeypatch):
+    """finish_reason=error 必须抬出 runtime 原文，不得伪装成"回复里没有 JSON"。
+
+    真实踩过：station runtime 缺 API key（MISSING_CREDENTIAL），final_response 是空串，
+    于是被 extract_json 报成 ``ValueError: 回复中未找到 JSON 对象``——把配置故障
+    伪装成"模型输出不合法"，重试三轮永远修不好，人工介入也看不到线索。
+    """
+    from qresearch.dsh_client import StationRuntimeError
+
+    harness = _ErrHarness("MISSING_CREDENTIAL",
+                          'no API key for provider route "deepseek-official"')
+    client = _err_client(monkeypatch, harness)
+    with pytest.raises(StationRuntimeError) as exc:
+        client._run("p", "s1")
+    assert "MISSING_CREDENTIAL" in str(exc.value)
+    assert "no API key" in str(exc.value)
+
+
+def test_fatal_runtime_error_escalates_without_retry(monkeypatch, tmp_path):
+    """凭据/配额类故障重试无意义：一次尝试即转人工，且带出真实原因。"""
+    harness = _ErrHarness("MISSING_CREDENTIAL", "no API key for provider route")
+    client = _err_client(monkeypatch, harness)
+    log = EventLog(tmp_path / "e.jsonl")
+    with pytest.raises(NeedsHuman) as exc:
+        client.call_station("understand", "p1", UnderstandOutput, "prompt",
+                            retries=2, event_log=log)
+    assert harness.calls == 1, "凭据类故障不该空转重试"
+    assert "MISSING_CREDENTIAL" in exc.value.reason
+    assert "no API key" in exc.value.reason
+
+
+def test_nonfatal_runtime_error_still_retries(monkeypatch):
+    """非配置类 runtime 报错仍按原策略换 session 重试。"""
+    harness = _ErrHarness("RUNTIME_CRASH", "runtime 崩了")
+    client = _err_client(monkeypatch, harness)
+    with pytest.raises(NeedsHuman):
+        client.call_station("understand", "p1", UnderstandOutput, "prompt",
+                            retries=1)
+    assert harness.calls == 2, "非 fatal 错误应重试到上限"

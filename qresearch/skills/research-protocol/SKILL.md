@@ -42,7 +42,13 @@ research_open → understand → hypothesize → plan_create → plan_show
 | 结论确认 | `decide` 后转述建议与 checklist | `qresearch conclude <project_dir> <decision_id>` |
 
 `plan_approve` 不写批准——它只查台账。人的批复事件（actor=HUMAN）出现后它才会
-返回 approved=true。**不要试图绕过**：没有 TTY 的进程批不了。
+返回 approved=true。**不要试图绕过**：MCP 面没有写批准的工具。
+
+人工写入口有两条，**你一条都代不了**：
+- 真实终端 `qresearch approve|reject|conclude`（TTY，保真度最高）；
+- `qresearch approvals-web`（localhost 浏览器点击，**保真度较低**，台账如实记
+  `channel=webui-local`，报告里单列标注）。
+事件里的 channel 字段区分两者；转述时把对应入口告诉研究者即可，不要宣称二者等价。
 
 ## 节点汇报模板（M3：每个交互点固定使用，不要自由发挥）
 
