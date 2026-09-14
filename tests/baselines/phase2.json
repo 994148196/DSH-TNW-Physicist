@@ -1,0 +1,16 @@
+[
+ "{\"action\": \"create_project\", \"actor\": \"system\", \"detail\": {}, \"object_id\": \"proj_phase2_demo\", \"object_type\": \"Project\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"station_started\", \"actor\": \"system\", \"detail\": {\"attempt\": 0}, \"object_id\": \"understand\", \"object_type\": \"station\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"station_call\", \"actor\": \"model\", \"detail\": {\"attempt\": 0, \"session\": \"proj_phase2_demo:understand:a0\"}, \"object_id\": \"understand\", \"object_type\": \"station\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"save\", \"actor\": \"system\", \"detail\": {}, \"object_id\": \"<id>\", \"object_type\": \"Goal\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"station_started\", \"actor\": \"system\", \"detail\": {\"attempt\": 0}, \"object_id\": \"hypothesize\", \"object_type\": \"station\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"station_call\", \"actor\": \"model\", \"detail\": {\"attempt\": 0, \"session\": \"proj_phase2_demo:hypothesize:a0\"}, \"object_id\": \"hypothesize\", \"object_type\": \"station\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"save_hypotheses\", \"actor\": \"system\", \"detail\": {\"count\": 2, \"ids\": [\"<id>\", \"<id>\"]}, \"object_id\": null, \"object_type\": \"Hypothesis\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"station_started\", \"actor\": \"system\", \"detail\": {\"attempt\": 0}, \"object_id\": \"plan\", \"object_type\": \"station\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"station_call\", \"actor\": \"model\", \"detail\": {\"attempt\": 0, \"session\": \"proj_phase2_demo:plan:a0\"}, \"object_id\": \"plan\", \"object_type\": \"station\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"station_started\", \"actor\": \"system\", \"detail\": {\"attempt\": 0}, \"object_id\": \"critic\", \"object_type\": \"station\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"station_call\", \"actor\": \"model\", \"detail\": {\"attempt\": 0, \"session\": \"proj_phase2_demo:critic:a0\"}, \"object_id\": \"critic\", \"object_type\": \"station\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"critique\", \"actor\": \"model\", \"detail\": {\"issues\": [], \"verdict\": \"pass\"}, \"object_id\": \"<id>\", \"object_type\": \"ResearchPlan\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"plan_ready\", \"actor\": \"system\", \"detail\": {\"issues\": [], \"verdict\": \"pass\", \"version\": 1}, \"object_id\": \"<id>\", \"object_type\": \"ResearchPlan\", \"project_id\": \"proj_phase2_demo\"}",
+ "{\"action\": \"approve\", \"actor\": \"system\", \"detail\": {\"note\": \"<path>\"}, \"object_id\": \"<id>\", \"object_type\": \"ResearchPlan\", \"project_id\": \"proj_phase2_demo\"}"
+]

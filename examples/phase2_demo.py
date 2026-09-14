@@ -47,7 +47,7 @@ OFFLINE_RESPONSES = {
         '{"action": "run_experiment", "purpose": "L=8 小系统基准", "tools": ["simple_ed"],'
         ' "inputs": {"L": 8}, "expected_outputs": ["energy.csv"]},'
         '{"action": "parameter_scan", "purpose": "尺寸扫描 L=10,12 检查有限尺寸效应", "tools": ["simple_ed"],'
-        ' "inputs": {"L": [10, 12]}, "expected_outputs": ["scan_energy.csv", "corr.csv"]},'
+        ' "inputs": {"scan": {"L": [10, 12]}}, "expected_outputs": ["scan_energy.csv", "corr.csv"]},'
         '{"action": "compare_benchmark", "purpose": "与 Bethe ansatz 值 1/4-ln2 对照",'
         ' "expected_outputs": ["comparison.md"]}],'
         ' "risks": ["小系统有限尺寸效应可能掩盖真实偏差"], "diff_summary": null}'

@@ -1,0 +1,4 @@
+[
+ "{\"action\": \"save_bundle\", \"actor\": \"system\", \"detail\": {}, \"object_id\": \"proj_heisenberg_demo\", \"object_type\": \"ProjectBundle\", \"project_id\": \"proj_heisenberg_demo\"}",
+ "{\"action\": \"status_change\", \"actor\": \"model\", \"detail\": {\"recommendation\": \"iterate\"}, \"object_id\": \"dec_001\", \"object_type\": \"Decision\", \"project_id\": \"proj_heisenberg_demo\"}"
+]
