@@ -9,6 +9,7 @@ from qresearch.core.status import DecisionType, PlanStatus
 from qresearch.core.storage import Storage
 from qresearch.dsh_client import DSHClient
 from qresearch.research_loop import run_research_loop
+from conftest import Persistent
 from qresearch.stations.executors import analyze
 
 UNDERSTAND_OK = (
@@ -69,8 +70,8 @@ def loop_client(make_scripted_client):
         "hypothesize": HYP_OK,
         "plan": [PLAN_OK] * 3,
         "critic": [CRITIC_PASS] * 3,
-        "analyze": _analysis_response,
-        "decide": _decide_factory(["iterate", "replan", "declare_result"]),
+        "analyze": [Persistent(_analysis_response)],
+        "decide": [Persistent(_decide_factory(["iterate", "replan", "declare_result"]))],
     }
     return make_scripted_client(responses)
 
@@ -127,8 +128,8 @@ def test_budget_gate_forces_human(tmp_path, make_scripted_client):
     client = make_scripted_client({
         "understand": UNDERSTAND_OK, "hypothesize": HYP_OK,
         "plan": PLAN_OK, "critic": CRITIC_PASS,
-        "analyze": _analysis_response,
-        "decide": _decide_factory(["iterate"]),
+        "analyze": [Persistent(_analysis_response)],
+        "decide": [Persistent(_decide_factory(["iterate"]))],
     })
     summary = run_research_loop(client, storage, log, "proj_budget",
                                 "q", rounds=1, auto_approve=True)
@@ -169,8 +170,8 @@ def test_scan_children_verified(tmp_path, make_scripted_client):
     client = make_scripted_client({
         "understand": UNDERSTAND_OK, "hypothesize": HYP_OK,
         "plan": PLAN_SCAN, "critic": CRITIC_PASS,
-        "analyze": _analysis_response,
-        "decide": _decide_factory(["declare_result"]),
+        "analyze": [Persistent(_analysis_response)],
+        "decide": [Persistent(_decide_factory(["declare_result"]))],
     })
     summary = run_research_loop(client, storage, log, "proj_scan",
                                 "Heisenberg 链尺寸扫描", rounds=1, auto_approve=True)

@@ -99,8 +99,7 @@ def _make_client(responses: dict, plan_prompts: list[str], decide_prompts: list[
             decide_prompts.append(prompt)
         item = queues[station].pop(0)
         if callable(item):
-            queues[station].insert(0, item)  # callable 常驻：按 prompt 现生成
-            return item(prompt, session_id)
+            return item(prompt, session_id)  # callable 一次性：出队即消费
         return item
 
     return DSHClient(runner=runner)

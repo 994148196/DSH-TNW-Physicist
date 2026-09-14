@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import yaml
 
+from conftest import Persistent
 from qresearch.core.events import EventLog
 from qresearch.core.storage import Storage
 from qresearch.tools.registry import get_tool, tool_names, unregister
@@ -89,7 +90,7 @@ def test_build_success_after_repair(tmp_path, db, make_scripted_client):
     spec_path = _spec_in_tmp(tmp_path)
     prompts: list[str] = []
     client = make_scripted_client({
-        "build": [_writer([BROKEN_MODULE, GOOD_MODULE], prompts)],
+        "build": [Persistent(_writer([BROKEN_MODULE, GOOD_MODULE], prompts))],
         "tool_critic": CRITIC_PASS,
     })
     log = EventLog(tmp_path / "events.jsonl")
@@ -129,7 +130,7 @@ def test_build_repair_exhausted(tmp_path, db, make_scripted_client):
 
     spec_path = _spec_in_tmp(tmp_path)
     prompts: list[str] = []
-    client = make_scripted_client({"build": [_writer([BROKEN_MODULE] * 3, prompts)]})
+    client = make_scripted_client({"build": [Persistent(_writer([BROKEN_MODULE] * 3, prompts))]})
     log = EventLog(tmp_path / "events.jsonl")
     result = build_tool(
         client, db, log, spec_path,
@@ -153,7 +154,7 @@ def test_build_prompt_contains_no_fixture_values(tmp_path, db, make_scripted_cli
     prompts: list[str] = []
     # 只交好实现，走通到批评者即可
     client = make_scripted_client({
-        "build": [_writer([GOOD_MODULE], prompts)],
+        "build": [Persistent(_writer([GOOD_MODULE], prompts))],
         "tool_critic": CRITIC_PASS,
     })
     try:
@@ -176,7 +177,7 @@ def test_build_client_factory_per_attempt(tmp_path, db, make_scripted_client):
 
     def factory(workspace: Path):
         calls.append(workspace)
-        return make_scripted_client({"build": [_writer([GOOD_MODULE], [])]})
+        return make_scripted_client({"build": [Persistent(_writer([GOOD_MODULE], []))]})
 
     client = make_scripted_client({"tool_critic": CRITIC_PASS})
     try:

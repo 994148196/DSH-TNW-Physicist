@@ -110,6 +110,18 @@ class ExperimentManager:
 
     # ---- 单步实验
     def execute_step(self, plan: ResearchPlan, step: PlanStep) -> Experiment:
+        experiment, spec, _s = self._prepare(plan, step)
+        if spec is None:
+            return experiment  # 未知工具：建账时已按失败落账
+        return self._run_and_finalize(experiment, spec, _s)
+
+    def _prepare(
+        self, plan: ResearchPlan, step: PlanStep,
+    ) -> tuple[Experiment, ToolSpec | None, PlanStep]:
+        """建账：创建 RUNNING 实验并落 started 事件。
+
+        未知工具当场按失败落账（计划 v2 §7.0），返回 spec=None。
+        """
         if step.action not in RUNNABLE_ACTIONS:
             raise ValueError(f"步骤 {step.step_id} 动作 {step.action} 不是可执行实验动作")
         if len(step.tools) != 1:
@@ -135,7 +147,7 @@ class ExperimentManager:
             self.storage.save(experiment)
             self._event("experiment_finished", experiment,
                         detail_extra={"status": "failed", "elapsed_s": 0.0})
-            return experiment
+            return experiment, None, step
         record = self._ensure_tool_record(spec)
         experiment.tool_id = record.tool_id
 
@@ -145,27 +157,96 @@ class ExperimentManager:
         workspace = self.root / experiment.experiment_id
         workspace.mkdir(parents=True, exist_ok=True)
         experiment.log_path = str(workspace / "run.log")
+        return experiment, spec, step
 
+    def _compute(self, spec: ToolSpec, inputs: dict, workspace: Path):
+        """只做计算（线程池可并行段）：返回 (outcome, elapsed)，异常向上抛。"""
+        t0 = time.monotonic()
+        outcome = self.runner.run(spec, inputs, workspace, self.default_timeout_s)
+        return outcome, time.monotonic() - t0
+
+    def _run_and_finalize(
+        self, experiment: Experiment, spec: ToolSpec, step: PlanStep,
+    ) -> Experiment:
+        """执行计算并落账（主线程段：storage/events 只在此触碰）。"""
+        workspace = self.root / experiment.experiment_id
         t0 = time.monotonic()
         try:
-            outcome = self.runner.run(spec, step.inputs, workspace, self.default_timeout_s)
-            elapsed = time.monotonic() - t0
-            (workspace / "result.json").write_text(
-                json.dumps(outcome.result, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            (workspace / "run.log").write_text(outcome.log_text, encoding="utf-8")
-            experiment.status = ExperimentStatus.COMPLETED
-            experiment.artifacts = [str(workspace / "result.json"), str(workspace / "run.log")]
-            experiment.parameters = {**step.inputs, "_elapsed_s": round(elapsed, 3)}
+            outcome, _ = self._compute(spec, step.inputs, workspace)
         except Exception as exc:  # noqa: BLE001 —— 失败也要落账（计划 v2 §7.0）
-            elapsed = time.monotonic() - t0
-            experiment.status = ExperimentStatus.FAILED
-            experiment.error = f"{type(exc).__name__}: {exc}"
-            try:
-                (workspace / "run.log").write_text(str(exc), encoding="utf-8")
-                experiment.artifacts = [str(workspace / "run.log")]
-            except OSError:
-                pass
+            self._finalize_failure(experiment, workspace, exc,
+                                   elapsed=time.monotonic() - t0)
+            return experiment
+        return self._finalize_success(experiment, step, outcome,
+                                      elapsed=time.monotonic() - t0)
+
+    # ---- 批量扫描：inputs.scan = {param: [值...]}，每个参数点一个 Experiment
+    def execute_scan(
+        self, plan: ResearchPlan, step: PlanStep, *, max_workers: int = 1,
+    ) -> list[Experiment]:
+        inputs = dict(step.inputs)
+        scan = inputs.pop("scan", None)
+        if not isinstance(scan, dict) or not scan:
+            # 缺 scan 声明：按失败落账，不炸闭环（计划 v2 §7.0）
+            return [self._record_invalid_step(plan, step, "声明 parameter_scan 但缺 inputs.scan")]
+        keys = sorted(scan)
+        combos = _product_grid([scan[k] for k in keys])
+        prepared: list[tuple[Experiment, ToolSpec, PlanStep]] = []
+        for idx, values in enumerate(combos):
+            point = dict(inputs)
+            for k, v in zip(keys, values):
+                point[k] = v
+            point["_scan"] = {k: v for k, v in zip(keys, values)}
+            point["_scan_index"] = idx
+            scan_step = step.model_copy(update={"inputs": point, "step_id": f"{step.step_id}_{idx}"})
+            prepared.append(self._prepare(plan, scan_step))
+        return self._finish_prepared(prepared, max_workers=max_workers)
+
+    def _finish_prepared(
+        self,
+        prepared: list[tuple[Experiment, ToolSpec | None, PlanStep]],
+        *,
+        max_workers: int = 1,
+    ) -> list[Experiment]:
+        """执行已建账的实验。并行时只并行计算段，落账留在主线程按序进行
+        （Storage 非线程安全；EventLog 自带锁）。"""
+        ready = [(e, spec, s) for e, spec, s in prepared if spec is not None]
+        done: list[Experiment] = [e for e, spec, _s in prepared if spec is None]
+        if max_workers <= 1 or len(ready) <= 1:
+            for e, spec, s in ready:
+                done.append(self._run_and_finalize(e, spec, s))
+            return done
+        from concurrent.futures import ThreadPoolExecutor
+
+        done_futures = []
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(ready))) as pool:
+            for e, spec, s in ready:
+                t0 = time.monotonic()
+                done_futures.append((e, s, t0, pool.submit(self._compute, spec, s.inputs,
+                                                           self.root / e.experiment_id)))
+            # 按提交顺序落账（审计可读）
+            for e, s, t0, fut in done_futures:
+                elapsed = time.monotonic() - t0
+                try:
+                    outcome, _ = fut.result()
+                except Exception as exc:  # noqa: BLE001 —— 失败也要落账
+                    self._finalize_failure(e, self.root / e.experiment_id, exc, elapsed=elapsed)
+                    done.append(e)
+                    continue
+                done.append(self._finalize_success(e, s, outcome, elapsed))
+        return done
+
+    def _finalize_success(
+        self, experiment: Experiment, step: PlanStep, outcome, elapsed: float,
+    ) -> Experiment:
+        workspace = self.root / experiment.experiment_id
+        (workspace / "result.json").write_text(
+            json.dumps(outcome.result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        (workspace / "run.log").write_text(outcome.log_text, encoding="utf-8")
+        experiment.status = ExperimentStatus.COMPLETED
+        experiment.artifacts = [str(workspace / "result.json"), str(workspace / "run.log")]
+        experiment.parameters = {**step.inputs, "_elapsed_s": round(elapsed, 3)}
         experiment.finished_at = _now()
         self.storage.save(experiment)
         self._event(
@@ -174,25 +255,22 @@ class ExperimentManager:
         )
         return experiment
 
-    # ---- 批量扫描：inputs.scan = {param: [值...]}，每个参数点一个 Experiment
-    def execute_scan(self, plan: ResearchPlan, step: PlanStep) -> list[Experiment]:
-        inputs = dict(step.inputs)
-        scan = inputs.pop("scan", None)
-        if not isinstance(scan, dict) or not scan:
-            # 缺 scan 声明：按失败落账，不炸闭环（计划 v2 §7.0）
-            return [self._record_invalid_step(plan, step, "声明 parameter_scan 但缺 inputs.scan")]
-        keys = sorted(scan)
-        combos = _product_grid([scan[k] for k in keys])
-        experiments: list[Experiment] = []
-        for idx, values in enumerate(combos):
-            point = dict(inputs)
-            for k, v in zip(keys, values):
-                point[k] = v
-            point["_scan"] = {k: v for k, v in zip(keys, values)}
-            point["_scan_index"] = idx
-            scan_step = step.model_copy(update={"inputs": point, "step_id": f"{step.step_id}_{idx}"})
-            experiments.append(self.execute_step(plan, scan_step))
-        return experiments
+    def _finalize_failure(
+        self, experiment: Experiment, workspace: Path, exc: Exception, *, elapsed: float,
+    ) -> None:
+        experiment.status = ExperimentStatus.FAILED
+        experiment.error = f"{type(exc).__name__}: {exc}"
+        try:
+            (workspace / "run.log").write_text(str(exc), encoding="utf-8")
+            experiment.artifacts = [str(workspace / "run.log")]
+        except OSError:
+            pass
+        experiment.finished_at = _now()
+        self.storage.save(experiment)
+        self._event(
+            "experiment_finished", experiment,
+            detail_extra={"status": "failed", "elapsed_s": round(elapsed, 3)},
+        )
 
     def _record_invalid_step(self, plan: ResearchPlan, step: PlanStep, why: str) -> Experiment:
         from qresearch.core.status import ExperimentStatus
@@ -211,19 +289,40 @@ class ExperimentManager:
 
     # ---- 整计划
     def execute_plan(
-        self, plan: ResearchPlan, *, include_requires_approval: bool = False
+        self, plan: ResearchPlan, *,
+        include_requires_approval: bool = False, max_workers: int = 1,
     ) -> list[Experiment]:
-        experiments: list[Experiment] = []
+        """执行计划全部可执行步骤。max_workers>1 时实验并行计算（落账仍按序）。
+
+        注：requires_approval 步骤默认跳过（审批后由 include_requires_approval 显式放开）。
+        """
+        # 先统一建账（scan 展开 + started 事件），再按需并行计算
+        prepared: list[tuple[Experiment, ToolSpec | None, PlanStep]] = []
         for step in plan.steps:
             if step.action not in RUNNABLE_ACTIONS:
                 continue
             if step.requires_approval and not include_requires_approval:
                 continue
             if step.action == "parameter_scan" or "scan" in step.inputs:
-                experiments.extend(self.execute_scan(plan, step))
+                inputs = dict(step.inputs)
+                scan = inputs.pop("scan", None)
+                if not isinstance(scan, dict) or not scan:
+                    prepared.append((self._record_invalid_step(
+                        plan, step, "声明 parameter_scan 但缺 inputs.scan"), None, step))
+                    continue
+                keys = sorted(scan)
+                for idx, values in enumerate(_product_grid([scan[k] for k in keys])):
+                    point = dict(inputs)
+                    for k, v in zip(keys, values):
+                        point[k] = v
+                    point["_scan"] = {k: v for k, v in zip(keys, values)}
+                    point["_scan_index"] = idx
+                    scan_step = step.model_copy(
+                        update={"inputs": point, "step_id": f"{step.step_id}_{idx}"})
+                    prepared.append(self._prepare(plan, scan_step))
             else:
-                experiments.append(self.execute_step(plan, step))
-        return experiments
+                prepared.append(self._prepare(plan, step))
+        return self._finish_prepared(prepared, max_workers=max_workers)
 
     # ---- 摘要
     def summarize(self, experiments: list[Experiment]) -> str:

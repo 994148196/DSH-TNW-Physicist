@@ -2,9 +2,9 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0–6 ✅ 已完成（P5 live 完整 3 轮闭环 + P6 live 构建晋升均通过）；Phase 7 ✅ 完成（Research Memory，验收演示 PASS）；Phase 8 ⬜ 未开始。
+**一句话状态**：Phase 0–7 ✅ 已完成（P5 live 完整 3 轮闭环 + P6 live 构建晋升 + P7 记忆库验收均通过）；Phase 8 ✅ 完成（HPC 与多项目：并行/预算/暂停恢复/Slurm dry-run/编排队列，验收演示 PASS）。
 
-最后更新：2026-09-13
+最后更新：2026-09-14
 
 ## 阶段总览
 
@@ -18,7 +18,7 @@
 | Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ✅ 完成 |
 | Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | ✅ 完成（live 验收 + 晋升） |
 | Phase 7 | Research Memory | ✅ 完成 |
-| Phase 8 | HPC 与多项目 | ⬜ 未开始 |
+| Phase 8 | HPC 与多项目 | ✅ 完成 |
 
 图例：✅ 完成 · 🔄 进行中 · ⬜ 未开始 · ⛔ 阻塞
 
@@ -128,6 +128,19 @@
 
 验收标准（计划 v2 §9 Phase 7）：新项目能检索复用旧项目经验（含"哪些实验没信息增益"）。**达成。**
 
+## Phase 8 验收清单
+
+- [x] **并行实验**：`ExperimentManager` 重构为"计算段线程池并行 + 记账主线程"——存储层（SQLite 非线程安全）写路径保持在主线程，`EventLog` 自带锁；`execute_plan(max_workers=N)` 并发峰值>1、耗时近线性缩短，落账顺序仍确定（`experiment_started` 全部先于任何 `experiment_finished`，按提交顺序 finalize）
+- [x] **预算闸**：`qresearch/core/budget.py`——`Budget(max_rounds / max_experiments / wallclock_min)`，代码层轮间硬闸（LLM 不可越过），耗尽原因留痕（"实验数预算耗尽（2/2）"等）并落账 `budget_exhausted` 事件
+- [x] **暂停 / 恢复**：轮间检查 `PAUSE` 旗标文件（`pause_flag`）→ 优雅暂停落账；`resume_research_loop` 从台账重建完整状态（真相在库里）续跑——计划版本 [1,2,3] 跨恢复衔接、决策/证据/事件链不断；`research_loop.py` 重构为共享的 `_rounds_loop`（fresh/resume 同一主干，消除双实现漂移）
+- [x] **Slurm 后端**：`qresearch/hpc/slurm.py`——`render_sbatch` 纯函数（#SBATCH 分区/时限/内存/CPU/账户，实验不经 LLM：脚本内 `python -m qresearch.tools.cli run`）+ `SlurmRunner(ToolRunner)`。**诚实边界：本机无 Slurm 集群，`dry_run=True`（默认）只生成/校验 sbatch 脚本不提交；dry-run 结果带 `dry_run` 标记且无工具输出 → 三层验证不放行、证据资格门拒绝引用（诚实失败优于冒充成功）。真实提交路径（sbatch 解析 job id / squeue 轮询 / result.json 回收）按标准 Slurm 命令实现，需集群环境验收**
+- [x] **多项目编排**：`qresearch/orchestrator.py`——`run_projects` 项目队列串行（LLM 站点是瓶颈，串行即可饱和；项目内实验另按 `max_parallel_experiments` 并行）；每项目独立 `<data_root>/<pid>/{state.sqlite, events.jsonl, sandbox/, experiments/, report.md, PAUSE}`；**`client_factory(sandbox)` 以沙箱为 cwd**——收口 Phase 2 发现的"DSH 站内 agent 写仓库根"问题；`auto_approve` 默认 False（长期队列不默认越过人工审批）
+- [x] **测试基建修正**：脚本化假客户端的 callable 语义由"一律常驻"改为"一次性消费 + 显式 `Persistent` 包装"——旧语义使按序编排（如 decide: iterate→iterate→terminate）永远停在第一个应答上，正是 test_pause_and_resume 失败的根因；队列耗尽改为显式报错（"编排少写一轮"立即暴露，不再静默串位）
+- [x] `pytest` 全绿：**81 passed**（新增 hpc 6：并行计时与落账顺序 / 实验数预算 / 墙钟预算 / 暂停恢复三段衔接 / sbatch 渲染+dry-run 证据门 / 双项目队列隔离与记忆共享）
+- [x] **验收演示 PASS**：`examples/phase8_demo.py` 五段——① 4×0.25s 实验 0.30s 完成（并发峰值 4）；② 实验数预算闸第 2 轮前拦停；③ 暂停→恢复→终止全程版本/决策衔接；④ sbatch 渲染字段齐备 + dry-run 被证据门拒绝；⑤ 双项目队列 terminated + 沙箱隔离 + 记忆库跨项目入库
+
+验收标准（计划 v2 §9 Phase 8）：多项目可编排队列执行、实验可并行、可暂停恢复、预算可控、HPC 扩展点就位。**达成**（Slurm 真实提交路径留待集群环境验收，dry-run 已验证到脚本层）。
+
 ## 里程碑日志
 
 ### 2026-09-13（开工日）
@@ -181,6 +194,12 @@
 - **Phase 7 完成**：四层跨项目记忆库 + 确定性蒸馏 + 检索注入（见 Phase 7 验收清单）。设计要点：① 记忆库是独立 SQLite（跨项目），与每项目 state.sqlite 分离，Markdown 镜像供人审；② 蒸馏是代码不是 LLM——记忆里的每条教训都能回放到源实验/验证报告/决策，避免"记忆本身成为无来源结论"；③ 检索是确定性关键词打分（拉丁分词 + 中文 2-gram），不引入向量库依赖（后续可换）；④ 失败案例层排注入最前，PLAN/DECIDE 模板明确"与拟议步骤雷同时必须修正或说明差异"。
 - 测试 **75 passed**；离线验收演示 8 项检查全过。蒸馏期发现并修复可读性问题：experiment.tool_id 存的是 ToolRecord 哈希，记忆条目统一解析回工具名。
 - 至此计划 v2 的核心科研闭环（Phase 0–7）全部完成。下一步：**Phase 8**——HPC 与多项目（Slurm/远程执行、预算、队列、暂停恢复、并行实验、沙箱隔离补全）。
+
+### 2026-09-14（Phase 8 完成）
+- **Phase 8 完成**：并行实验 / 预算闸 / 暂停恢复 / Slurm 后端 / 多项目编排（见 Phase 8 验收清单）。设计要点：① 并行只切计算段，记账保持主线程（SQLite 非线程安全），落账顺序确定；② `research_loop.py` 重构为 `_rounds_loop` 共享主干 + `resume_research_loop` 台账重建——暂停/恢复的真相在库里，fresh 与 resume 不再有双实现；③ Slurm 后端实现 ToolRunner 接口（实验不经 LLM 铁律不变），dry-run 结果物理性过不了证据门——诚实边界落在机制上而非文档上；④ 编排器每项目独立沙箱 cwd，收口 Phase 2 的"站内 agent 写仓库根"遗留项。
+- **测试基建修正**：假客户端 callable 语义改一次性 + 显式 `Persistent`——旧语义的"callable 一律常驻"使按序 decide 编排永远停在第一个应答（test_pause_and_resume 的 budget_exhausted≠terminated 由此而来，循环本体无缺陷）。这修正波及 test_research_loop / test_tool_builder 的既有编排写法，全部改为显式常驻；队列耗尽从静默串位改为显式报错。
+- 测试 **81 passed**；验收演示五段全 PASS。Slurm 真实提交路径需集群环境（诚实边界已记入验收清单）。
+- 至此计划 v2 Phase 0–8 全部完成。后续可选项：Phase 8 的 live 验证（真实 LLM 双项目队列）；计划 v2 阶段五（多 Agent 协作 + 自动研究方向，仅探索不验收）。
 
 ## 阻塞 / 待决
 
