@@ -2,7 +2,7 @@
 
 > 由 Coding Agent 维护：每完成一个阶段或里程碑必须更新本文件。阶段定义与验收标准见《基于DSH的量子多体自主科研系统开发计划_v2.md》第 9 节。
 
-**一句话状态**：Phase 0–6 ✅ 已完成（P5 live 完整 3 轮闭环 + P6 live 构建晋升均通过）；Phase 7 🔄 进行中（Research Memory）。
+**一句话状态**：Phase 0–6 ✅ 已完成（P5 live 完整 3 轮闭环 + P6 live 构建晋升均通过）；Phase 7 ✅ 完成（Research Memory，验收演示 PASS）；Phase 8 ⬜ 未开始。
 
 最后更新：2026-09-13
 
@@ -17,7 +17,7 @@
 | Phase 4 | Verification Manager（三层基准 + 证据资格门） | ✅ 完成 |
 | Phase 5 | Research Loop 闭环（ANALYZE/DECIDE + 报告） | ✅ 完成 |
 | Phase 6 | Tool Builder（Spec 先行 + 防串通验证） | ✅ 完成（live 验收 + 晋升） |
-| Phase 7 | Research Memory | ⬜ 未开始 |
+| Phase 7 | Research Memory | ✅ 完成 |
 | Phase 8 | HPC 与多项目 | ⬜ 未开始 |
 
 图例：✅ 完成 · 🔄 进行中 · ⬜ 未开始 · ⛔ 阻塞
@@ -117,6 +117,17 @@
 - [x] **live 构建验收 PASS**：真实 DSH（deepseek-v4-flash）编码 tfim_ed——**首轮即通过全部 8 项 golden**（含 h=0 精确锚点、临界 -4J/π、独立稠密 oracle、单调收敛），三层验证 passed；批评者给出实质审查（1 concern：gap 归零阈值 1e-11 会吞掉 N≥18 有序相的指数小能隙——实测 N=20,h=0.3 真实 gap 8.56e-12 被报为 0；2 minor：docstring 夸大自检、与 Spec 无关的元评论），无 blocker；构建报告出具（`research_data/demo_phase6/builds/tfim_ed/build_report.md`），auto-approve 留痕（actor=system，演示）
 - [x] **晋升完成**：交付代码原样复制入 `qresearch/tools/tfim_ed.py`（仅追加 seed 注册块，保持 diff-vs-Spec 可追溯）+ `load_seed_tools` 注册 + fixtures `benchmarks/golden/tfim_ed.yaml` 随晋升提交（与出题侧定稿逐字节一致）。人工审查（代行）结论：① 构建者正确反驳了 Spec 初版的错误表述——铁磁 TFIM 在 h=0 无奇 N 受挫（键算符对易且可同时取 -1，全对齐态 E0=-NJ 任意 N 成立），受挫的是 J<0 反铁磁（奇 N 环 E0=-|J|(N-2)），出题侧采纳并修订 `tool_specs/tfim_ed.yaml`；② critic 的 gap 归零 concern 作为已知限制接受（golden 覆盖域之外、docstring 已如实声明）。晋升暴露并修复一处真实缺陷：`build_tool` 正式注册不容忍同名 seed/旧版本 → `register(replace=True)`（重建升级路径）。晋升后子进程模式可用，注册表 = simple_ed + dmrg_adapter + tfim_ed
 
+## Phase 7 验收清单
+
+- [x] `qresearch/memory/store.py`——`MemoryStore`：跨项目独立 SQLite + Markdown 镜像（人可读）；四层 `MemoryEntry`（project 项目层 / method 方法层 / tool 工具层 / failure 失败案例层）；确定性关键词检索（拉丁分词 + 中文 2-gram，命中打分，零分不返回——向量检索为后续增强）
+- [x] `qresearch/memory/distill.py`——`distill_project`：项目结束时从台账**确定性蒸馏**（铁律延续：代码提取，不经 LLM，每条可回放到源实验/决策/报告）：项目层（问题+假设命运+决策轨迹）、方法层（被验证支撑的证据主张，上限 6 条）、工具层（使用/失败/验证统计）、失败案例层（FAILED 实验 + 验证未通过实验，含错误与教训）；全部条目携带问题域标签（相似问题可检索）与工具名（人类可读，非 ToolRecord 哈希）
+- [x] `qresearch/memory/inject.py`——`memory_digest`：检索结果格式化为 prompt 片段，**失败案例排最前**（计划 §7.9：DECIDE 与下一轮 PLAN 的固定输入）
+- [x] 注入贯通：PLAN/DECIDE 模板新增 `{memory}` 块（"失败案例与拟议步骤雷同时必须先修正做法或明确写出差异"）；`run_research_loop(memory_store=)` 每轮检索注入并落账 `memory_retrieved` 事件，项目结束蒸馏入库并落账 `memory_written`；未接记忆库时闭环行为不变（占位"（无）"，无 memory 事件）
+- [x] `pytest` 全绿：**75 passed**（新增 memory 5：四层蒸馏 / 检索与镜像 / 闭环注入+蒸馏落账 / 无记忆库行为不变 / 空库摘要）
+- [x] **验收演示 PASS**：`examples/phase7_demo.py`——旧项目（含奇数 N 必败实验）蒸馏四层入库 → 新项目（同问题域）PLAN/DECIDE prompt 均检索到旧项目失败案例"simple_ed 要求偶数 N"与方法/工具经验 → 新项目干净收尾不产失败案例（如实）但项目/方法/工具层滚动入库 → Markdown 镜像可读 → **PHASE 7 DEMO: PASS**
+
+验收标准（计划 v2 §9 Phase 7）：新项目能检索复用旧项目经验（含"哪些实验没信息增益"）。**达成。**
+
 ## 里程碑日志
 
 ### 2026-09-13（开工日）
@@ -165,6 +176,11 @@
 - **P5 live 验收 PASS**：加固后首跑即完整走完 3 轮（~25 分钟，302 事件）——status=terminated，决策链 iterate→replan→terminate（第 2 轮模型主动判定路线信息增益耗尽建议 replan，第 3 轮换路线后 terminate 收束），381 条 Evidence，报告自动生成。plan 校验零耗尽（动作选择指引 + 错误信息给替代动作生效），1 个 dmrg 实验失败被优雅落账并在 replan 后复跑成功。至此 Phase 5 验收标准的"全自动 3 轮"在离线与真实 LLM 两种模式下均达成。
 - **Decision 质量观察**：checklist 全部挂真实 evidence id；replan 的 rationale 明确引用"第 2 轮状态与第 1 轮实质相同"——预算/信息增益判断有依据，非套话。
 - 下一步：**Phase 7**——Research Memory（四层记忆：项目/方法/工具/失败案例 + 检索注入；验收：新项目能检索复用旧项目经验，含"哪些实验没信息增益"）。
+
+### 2026-09-14（Phase 7 完成）
+- **Phase 7 完成**：四层跨项目记忆库 + 确定性蒸馏 + 检索注入（见 Phase 7 验收清单）。设计要点：① 记忆库是独立 SQLite（跨项目），与每项目 state.sqlite 分离，Markdown 镜像供人审；② 蒸馏是代码不是 LLM——记忆里的每条教训都能回放到源实验/验证报告/决策，避免"记忆本身成为无来源结论"；③ 检索是确定性关键词打分（拉丁分词 + 中文 2-gram），不引入向量库依赖（后续可换）；④ 失败案例层排注入最前，PLAN/DECIDE 模板明确"与拟议步骤雷同时必须修正或说明差异"。
+- 测试 **75 passed**；离线验收演示 8 项检查全过。蒸馏期发现并修复可读性问题：experiment.tool_id 存的是 ToolRecord 哈希，记忆条目统一解析回工具名。
+- 至此计划 v2 的核心科研闭环（Phase 0–7）全部完成。下一步：**Phase 8**——HPC 与多项目（Slurm/远程执行、预算、队列、暂停恢复、并行实验、沙箱隔离补全）。
 
 ## 阻塞 / 待决
 

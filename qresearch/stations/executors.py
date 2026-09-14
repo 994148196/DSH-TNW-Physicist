@@ -91,6 +91,7 @@ def make_plan(
     previous: ResearchPlan | None = None,
     critic_notes: str = "",
     decision_id: str | None = None,
+    memory_text: str = "",
     event_log: EventLog | None = None,
     retries: int = 1,
 ) -> ResearchPlan:
@@ -137,7 +138,8 @@ def make_plan(
         "plan", project_id, PlanOutput,
         PLAN.format(
             version=version, goal=_goal_digest(goal), hypotheses=hypotheses_text,
-            actions=actions_text(), tools=tools_text(), critic_notes=critic_notes or "（无）",
+            actions=actions_text(), tools=tools_text(),
+            memory=memory_text or "（无）", critic_notes=critic_notes or "（无）",
             diff_instruction=diff_instruction,
         ),
         retries=retries, event_log=event_log, validator=_check_tools,
@@ -194,6 +196,7 @@ def plan_with_critic(
     previous: ResearchPlan | None = None,
     decision_id: str | None = None,
     max_rounds: int = 2,
+    memory_text: str = "",
     event_log: EventLog | None = None,
     retries: int = 1,
 ) -> tuple[ResearchPlan, CritiqueOutput]:
@@ -204,7 +207,8 @@ def plan_with_critic(
     version = previous.version + 1 if previous else 1
     plan = make_plan(
         client, project_id, goal, hypotheses, version=version, previous=previous,
-        decision_id=decision_id, event_log=event_log, retries=retries,
+        decision_id=decision_id, memory_text=memory_text,
+        event_log=event_log, retries=retries,
     )
     critique_out: CritiqueOutput | None = None
     for round_no in range(max_rounds):
@@ -221,7 +225,7 @@ def plan_with_critic(
         plan = make_plan(
             client, project_id, goal, hypotheses, version=plan.version + 1,
             previous=previous, critic_notes=notes, decision_id=decision_id,
-            event_log=event_log, retries=retries,
+            memory_text=memory_text, event_log=event_log, retries=retries,
         )
     assert critique_out is not None
     return plan, critique_out
@@ -327,6 +331,7 @@ def decide(
     *,
     round_no: int,
     max_rounds: int,
+    memory_text: str = "",
     event_log: EventLog | None = None,
     retries: int = 1,
 ) -> Decision:
@@ -361,6 +366,7 @@ def decide(
                 f"建议下一步：{analysis.recommended_next_steps}"
             ),
             evidence=evidence_text,
+            memory=memory_text or "（无）",
             budget=budget_text,
         ),
         retries=retries, event_log=event_log, validator=_check_evidence,

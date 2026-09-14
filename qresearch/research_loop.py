@@ -115,13 +115,33 @@ def run_research_loop(
     n_hypotheses: int = 3,
     retries: int = 1,
     experiments_root: str | Path | None = None,
+    memory_store=None,
 ) -> dict:
-    """完整研究闭环。返回 summary dict；所有状态可从 storage/events 回放。"""
+    """完整研究闭环。返回 summary dict；所有状态可从 storage/events 回放。
+
+    memory_store（MemoryStore，可选）：跨项目经验库（计划 v2 §7.9）。
+    每轮检索注入 PLAN/DECIDE prompt（失败案例优先），项目结束时蒸馏入库。
+    """
     from qresearch.core.status import (
         DecisionRecommendation, DecisionType, PlanStatus, VerificationStatus,
     )
     from qresearch.experiments.manager import ExperimentManager
     from qresearch.verification.manager import VerificationManager
+
+    def _memory_event(action: str, detail: dict) -> None:
+        event_log.append(Event(actor=Actor.SYSTEM, action=action,
+                               project_id=project_id, object_type="Memory",
+                               object_id=project_id, detail=detail))
+
+    def _memory_digest_text() -> str:
+        if memory_store is None:
+            return ""
+        from qresearch.memory import memory_digest
+
+        query = f"{goal.question} {' '.join(goal.quantities)}" if goal else question
+        digest, n_hits = memory_digest(memory_store, query)
+        _memory_event("memory_retrieved", {"query": query[:200], "n_hits": n_hits})
+        return digest
 
     needs_human: str | None = None
 
@@ -160,10 +180,11 @@ def run_research_loop(
 
     try:
         for round_no in range(1, rounds + 1):
-            # ---- PLAN（critic 修订循环）
+            # ---- PLAN（critic 修订循环；注入记忆库检索）
             plan, critique = plan_with_critic(
                 client, project_id, goal, hypotheses,
                 previous=previous_plan, decision_id=last_decision_id,
+                memory_text=_memory_digest_text(),
                 event_log=event_log, retries=retries,
             )
             plan.status = PlanStatus.AWAITING_APPROVAL
@@ -226,6 +247,7 @@ def run_research_loop(
             decision = decide(
                 client, project_id, goal, hypotheses, analysis, all_evidence,
                 round_no=round_no, max_rounds=rounds,
+                memory_text=_memory_digest_text(),
                 event_log=event_log, retries=retries,
             )
             if round_no == rounds and decision.recommendation.value == "iterate":
@@ -263,6 +285,18 @@ def run_research_loop(
                            project_id=project_id, object_type="Report",
                            object_id=str(report_path),
                            detail={"rounds_used": len(all_decisions)}))
+
+    # ---- 记忆蒸馏入库（项目结束时；转人工的部分经验同样有价值）
+    if memory_store is not None:
+        from qresearch.memory import distill_project
+
+        entries = distill_project(storage, project_id)
+        for entry in entries:
+            memory_store.add(entry)
+        _memory_event("memory_written", {
+            "n_entries": len(entries),
+            "layers": sorted({e.layer.value for e in entries}),
+        })
 
     summary = {
         "rounds_used": len(all_decisions),
