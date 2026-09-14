@@ -155,10 +155,13 @@ summary = resume_research_loop(client, storage, log, PID, rounds=3, ...)
 引擎负责一切记账与执行：
 
 ```bash
-# 1) 落盘 research profile（幂等；--force 重写 patch）
-.venv/Scripts/python.exe -X utf8 examples/setup_dsh_profile.py     --projects-root D:/AI/Agent/Try/research-projects     --install-skill-to D:/AI/Agent/Try/research-projects
+# 1) 落盘 research profile + skill（幂等；--force 重写 patch）
+#    skill 装到 <DSH_HOME>/skills/（DSH 的 skill 发现目录，源码实证）
+.venv/Scripts/python.exe -X utf8 examples/setup_dsh_profile.py     --projects-root D:/AI/Agent/Try/research-projects
 
 # 2) 核对合并结果（改→验证→记录），零警告再启动
+#    注意：dsh 必须从仓库根目录启动（.dsh-runtime 所在地），换目录会报
+#    "requires an explicit DSH_HOME"
 dsh --profile research --dump-config
 dsh --profile research
 ```

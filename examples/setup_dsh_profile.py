@@ -9,13 +9,17 @@
     · approval：ask（fail-closed，A1 的壳侧审批呈现）
   已存在时不覆盖（保护手工修改）——--force 才重写。
 
-可选 --install-skill-to <projectRoot>：把 research-protocol SKILL.md 复制到
-<projectRoot>/.dsh/skills/research-protocol/SKILL.md。
+skill 默认安装到 <DSH_HOME>/skills/research-protocol/SKILL.md——这是 DSH 的
+skill 发现目录（dsh-agent-presets 源码：`dsh-skill-filesystem` 拥有
+`<dshHome>/skills`；项目目录下的 .dsh/skills 不是 DSH 约定）。可选
+--install-skill-to <dir> 额外复制一份到别处（如项目内留档）。
 
 用法：
     .venv/Scripts/python.exe -X utf8 examples/setup_dsh_profile.py \
         --projects-root D:/AI/Agent/Try/research-projects \
         [--dsh-home ~/.dsh] [--install-skill-to D:/somewhere/research] [--force]
+
+启动必须从仓库根目录（.dsh-runtime 所在地）：cd <repo> && dsh --profile research
 
 之后按"改 → 验证 → 记录"三步走：`dsh --profile research --dump-config` 核对
 合并结果，再 `dsh --profile research` 启动（M2 live 走查 L3）。
@@ -104,8 +108,8 @@ def patch_yaml(python_exe: str, projects_root: str) -> str:
 """
 
 
-def install_skill(project_root: Path) -> Path:
-    dst = project_root / ".dsh" / "skills" / "research-protocol" / "SKILL.md"
+def install_skill(dsh_home: Path) -> Path:
+    dst = dsh_home / "skills" / "research-protocol" / "SKILL.md"
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(SKILL_SRC, dst)
     return dst
@@ -118,7 +122,7 @@ def main() -> int:
     parser.add_argument("--dsh-home", default=None,
                         help="DSH_HOME（默认 %%DSH_HOME%% 或 ~/.dsh）")
     parser.add_argument("--install-skill-to", default=None,
-                        help="顺便把 research-protocol skill 装到该研究项目根")
+                        help="额外把 SKILL.md 复制到该目录（主安装位置固定为 <dsh-home>/skills）")
     parser.add_argument("--python", default=sys.executable,
                         help="MCP server 用的解释器（默认当前 venv）")
     parser.add_argument("--force", action="store_true",
@@ -154,9 +158,13 @@ def main() -> int:
     print("验证（改→验证→记录）：")
     print("  dsh --profile research --dump-config   # 核对合并结果")
     print("  dsh --profile research                 # 启动（L3 live 走查）")
+    dst = install_skill(dsh_home)
+    print(f"skill 已安装：{dst}")
     if args.install_skill_to:
-        dst = install_skill(Path(args.install_skill_to))
-        print(f"skill 已安装：{dst}")
+        extra = Path(args.install_skill_to) / "research-protocol" / "SKILL.md"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SKILL_SRC, extra)
+        print(f"skill 副本已安装：{extra}")
     return 0
 
 
