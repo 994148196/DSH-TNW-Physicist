@@ -1,9 +1,26 @@
 # 基于 DSH 的量子多体自主科研系统开发计划 v3 —— 交互式 Agent 化
 
-> 状态：**待评审，未开工**
-> 前置：v2 计划 Phase 0–8 已完成（`PROGRESS.md`，92 项 pytest 全绿，P5/P6/P8 均过 live 验收）
-> 冲突处理：**铁律以 v2 为准**（LLM 只提议代码记账 / 实验不经 LLM / 出题人≠答题人 / 终止与结论无条件转人工 / 全程可回放）；**机制细节以本文件为准**
-> 编写日期：2026-09-14
+> 状态：**评审通过（2026-09-14，含修订 A1–A7），已开工**
+> 前置：v2 计划 Phase 0–8 已完成，且"Phase 9 交互层"（CLI 会话 / 双通道审批 / 实时进度）已入库——**pytest 基线 104 项全绿**（本文起草时的 92 为交互层落地前数字）
+> 阶段命名：本计划的 P9/P10/P11 在 `PROGRESS.md` 中记为 **M1/M2/M3**（"Phase 9" 已被交互层占用）
+> 冲突处理：**铁律以 v2 为准**（LLM 只提议代码记账 / 实验不经 LLM / 出题人≠答题人 / 终止与结论无条件转人工 / 全程可回放）；**机制细节以本文件 + 评审修订为准**
+> 编写日期：2026-09-14；评审修订：2026-09-14
+
+---
+
+## 评审修订（A1–A7）
+
+评审结论：**通过，按下列修订执行**。修订不改变目的与铁律，只校准机制与验收。
+
+| # | 修订 | 动因 |
+|---|---|---|
+| A1 | **人工审批走"台账仲裁 + CLI 审批台 + TTY 守卫"**：MCP 的确认类工具（`plan_approve` / 结论确认）**不收 actor 参数**，只**查询**台账中是否存在该对象 `actor=HUMAN` 的审批事件；没有则返回"待人工审批"与操作指引。唯一写 `actor=HUMAN` 审批事件的入口是 `qresearch` CLI（新增 approvals 子命令；TTY 守卫 `sys.stdin.isatty()` 为假即拒绝——agent 经 DSH bash 起的子进程没有 TTY） | MCP 工具由 agent 调用，"actor 必须为 human"的参数约束防不住 agent 自我批准；台账是唯一真相源（D1），审批权也必须在台账上仲裁 |
+| A2 | **异步 job 协议覆盖全部长工具**（站点调用与实验 alike）：`understand/hypothesize/plan_create/plan_revise/analyze/decide/experiments_run` 一律返回 `job_id`，`job_status/job_result` 轮询 | 站点调用实测 3–5 分钟（P2 live 数据），60s `toolCallTimeoutMs` 下同步返回必超时 → agent 误判失败重跑，台账重复 |
+| A3 | **引擎核心方法全同步；jobs.py 只是 MCP 层薄封装**：壳 B（`run_research_loop` / `run_projects`）不经过 JobManager，事件时序与重构前严格一致 | L1 验收门要求事件序列不变；线程池的时序抖动只允许出现在 MCP 路径 |
+| A4 | **Windows 沙箱是"部分执行"**：DSH 文档明示 Windows ACL 后端 "reports partial enforcement for its ambient ACL gaps"。L4-3 在 Windows 上的判据放宽为"触发 ask 审批**或**拒绝，二者其一"；越权写盘的硬防线 = 审批层（ask）+ 引擎纪律，不依赖沙箱 | 平台事实 |
+| A5 | **验收数字与比对方法校准**：pytest 基线 92 → **104**（且"测试文件零改动"门不变）；events.jsonl 的"diff 一致"明确为**归一化事件序列一致**——剥离时间戳与每次运行新生成的 id（`proj/goal/hyp/step/plan/exp/evidence/dec/tool/vr` 前缀）后比较 (actor, action, object_type, detail 归一化) 序列，由 `examples/compare_events.py` 完成 | id/时间戳每次运行必然不同，字面 diff 不可行 |
+| A6 | **adhoc 语义澄清**：`adhoc_record` 登记 bash 现算数值 → **永远无法通过** `adhoc_verify`（无注册工具、无 golden）——这是特性不是缺陷；要可验证的临时计算，agent 必须用**注册工具**跑并记 `adhoc_record(tool=<注册名>, parameters=…)`，`adhoc_verify` 对这类记录走三层 golden 可升级为 passed 证据。adhoc 实验 `plan_id=""`（Experiment.plan_id 加默认值 `""`），step_id 前缀 `adhoc_`，事件 `adhoc_recorded` | 三层验证挂注册工具；"未验证结果不得引用"的门靠这条语义成立 |
+| A7 | **MCP server 进程内嵌自己的 DSHClient**：交互会话（dsh web）是壳；引擎在 MCP 工具内经 SDK 自起 runtime 跑站点——出题人≠答题人与站点纪律原样保留；壳与智能引擎是两个进程两层模型 | 架构澄清 |
 
 ---
 
@@ -108,7 +125,7 @@
 | `qresearch/tools/registry.py`、`golden` | 不变（出题人≠答题人的锚点） |
 | `qresearch/memory/` | 增加"adhoc 经验也蒸馏"的可选开关（保持确定性蒸馏） |
 | `qresearch/viz.py` | 暴露为 MCP 工具（出图给人看） |
-| `tests/`（92 项） | **作为 P9 的回归门，不允许改断言来迁就重构** |
+| `tests/`（104 项） | **作为 M1 的回归门，不允许改断言来迁就重构** |
 
 ### 2.3 外部链接
 
@@ -136,13 +153,13 @@
 
 ## 4. 开发步骤
 
-### P9 内核接口化（纯重构，行为零变化）
+### M1 内核接口化（原编号 P9；纯重构，行为零变化）
 
 **目标**：把科研动作收口到一个 `ResearchEngine` façade，使"谁在驱动"变得可替换（现有 loop / MCP / 未来的壳都能驱动同一内核）。
 
 **改动**
 
-1. 新增 `qresearch/engine.py`：
+1. 新增 `qresearch/engine.py`（**全部方法同步——A3**；异步 job 协议由 `jobs.py` 在 MCP 层包装）：
 
 ```python
 class ResearchEngine:
@@ -157,16 +174,15 @@ class ResearchEngine:
                     previous_plan_id: str | None = None) -> tuple[ResearchPlan, CritiqueOutput]: ...
     def plan_approve(self, plan_id: str, *, actor: str, note: str = "") -> ResearchPlan: ...
     def plan_reject(self, plan_id: str, *, actor: str, note: str = "") -> ResearchPlan: ...
-    # 执行与验证
-    def experiments_run(self, plan_id: str, *, max_workers: int = 1) -> str:      # 返回 job_id
-    def job_status(self, job_id: str) -> dict: ...
-    def job_result(self, job_id: str) -> dict: ...
-    def job_cancel(self, job_id: str) -> bool: ...
+    # 执行与验证（同步；MCP 层经 jobs.py 包装为 job_id 协议，A2/A3）
+    def experiments_run(self, plan_id: str, *, max_workers: int = 1) -> dict:
+        # {experiment_ids: [...], n_completed: int, n_failed: int}
     def verify(self, experiment_ids: list[str]) -> list[VerificationReport]: ...
-    # 分析与决策
-    def analyze(self, project_id: str, *, experiment_ids: list[str]) -> Analysis: ...
+    def analyze(self, project_id: str, *, experiment_ids: list[str],
+                eligible_ids: set[str] | None = None) -> tuple[AnalyzeOutput, list[Evidence]]:
+        # eligible_ids 缺省时按 verification_status==PASSED 过滤（证据资格门）
     def decide(self, project_id: str, *, round_no: int, max_rounds: int) -> Decision: ...
-    # adhoc（新自由度，D3）
+    # adhoc（新自由度，D3 + A6）
     def adhoc_record(self, project_id: str, *, kind: str, summary: str,
                      tool: str | None = None, parameters: dict | None = None,
                      artifacts: list[str] | None = None) -> Experiment: ...
@@ -181,23 +197,24 @@ class ResearchEngine:
 
 2. `qresearch/research_loop.py`：`run_research_loop` / `resume_research_loop` / `_rounds_loop` 改为调用 `ResearchEngine` 的方法，逻辑等价搬迁（不新增行为、不改提示词、不改事件名）。
 3. `qresearch/loop.py` 的 `run_planning_phase` 同样落到 façade 上；`_interactive_approval` 保留（离线/无 MCP 场景仍可用）。
-4. 新增 `qresearch/jobs.py`：进程内 job 注册表（`job_id → 状态/进度/结果/取消标志`），基于 `ThreadPoolExecutor` + `EventLog` 落账；`experiments_run` 只提交、不阻塞。
+4. 新增 `qresearch/jobs.py`：进程内 job 注册表（`job_id → 状态/进度/结果/取消标志`），基于 `ThreadPoolExecutor`；**只服务 MCP 层（A3）**——长工具（站点调用与实验 alike，A2）提交后立即返回 `job_id`；同 key（如 `experiments:<plan_id>`）活跃 job 重复提交幂等返回既有 id（D4 防重复实验）。实验执行中的协作式取消留到 M3（P11），M1 先支持取消未开始 job 并如实报告 `cancel_requested`。
 
 **检验（验收门）**
 
 ```bash
-.venv/Scripts/python.exe -X utf8 -m pytest -q                 # 必须 92 passed，且测试文件零改动
-.venv/Scripts/python.exe -X utf8 examples/phase2_demo.py --auto-approve
+.venv/Scripts/python.exe -X utf8 -m pytest -q                 # 必须 104 passed，且测试文件零改动
+.venv/Scripts/python.exe -X utf8 examples/phase2_demo.py --auto-approve --offline
 .venv/Scripts/python.exe -X utf8 examples/phase5_demo.py
 .venv/Scripts/python.exe -X utf8 examples/phase8_demo.py
 .venv/Scripts/python.exe -X utf8 examples/resume_demo.py
+.venv/Scripts/python.exe -X utf8 examples/compare_events.py <重构前基线目录> <重构后目录>   # A5 归一化比对
 ```
 
-判据：命令全部退出码 0；`git diff --stat tests/` 为空；同一输入下 `events.jsonl` 的事件序列与重构前一致（可对同一 demo 目录做 `diff`）。
+判据：命令全部退出码 0；`git diff --stat tests/` 为空；四个 demo 的**归一化事件序列**（A5）与重构前基线一致。
 
 ---
 
-### P10 MCP server + DSH 接入（功能主体）
+### M2 MCP server + DSH 接入（原编号 P10；功能主体）
 
 **目标**：`dsh web` 里能对话完成"出计划 → 审批 → 跑一轮 → 出报告"，且能自然语言干计划外的活并留下痕迹。
 
@@ -208,17 +225,17 @@ class ResearchEngine:
 | 工具 | 类型 | 是否写台账 | 是否需人审 | 说明 |
 |---|---|---|---|---|
 | `research_open` / `research_status` | 查询/创建 | 是（仅项目登记） | 否 | 打开/查看项目 |
-| `understand` / `hypothesize` | 站点提议 | 是 | 否 | 产出 Goal/假设（Pydantic 校验同现有） |
-| `plan_create` / `plan_revise` | 站点提议 | 是 | 否 | 返回 plan 摘要 + critic issues + 版本 diff |
+| `understand` / `hypothesize` | 站点提议 | 是 | 否 | 产出 Goal/假设（Pydantic 校验同现有）；**经 job 协议（A2）** |
+| `plan_create` / `plan_revise` | 站点提议 | 是 | 否 | 返回 plan 摘要 + critic issues + 版本 diff；**经 job 协议（A2）** |
 | `plan_show` | 查询 | 否 | 否 | 结构化计划卡片（给人看） |
-| `plan_approve` / `plan_reject` | 状态变更 | 是 | **是（人）** | actor 必须为 human；auto 路径只允许离线脚本 |
-| `experiments_run` | 执行 | 是 | 否（计划已批） | 返回 `job_id`（D4） |
+| `plan_approve` / `plan_reject` | 状态变更 | 是 | **是（人）** | **A1 台账仲裁**：MCP 工具不收 actor，只查台账 HUMAN 审批事件；写入口 = `qresearch` CLI（TTY 守卫） |
+| `experiments_run` | 执行 | 是 | 否（计划已批） | 返回 `job_id`（D4/A2） |
 | `job_status` / `job_result` / `job_cancel` | 查询/控制 | 是（起止） | 否 | 轮询式进度 |
 | `verify` | 验证 | 是 | 否 | 三层 + 证据资格门 |
-| `analyze` / `decide` | 站点提议 | 是 | 否 | 只允许引用已验证实验 |
-| `declare_result` | 结论 | 是 | **是（人）** | 引擎强制 `requires_human=True`（D6） |
-| `adhoc_record` | 记账 | 是 | 否 | 登记 adhoc 动作与产物，标记未验证（D3） |
-| `adhoc_verify` | 验证 | 是 | 否 | 让 adhoc 走同一套 golden |
+| `analyze` / `decide` | 站点提议 | 是 | 否 | 只允许引用已验证实验；**经 job 协议（A2）** |
+| `declare_result` | 结论 | 是 | **是（人）** | 引擎强制 `requires_human=True`（D6）；最终确认走 CLI 审批台（A1） |
+| `adhoc_record` | 记账 | 是 | 否 | 登记 adhoc 动作与产物，标记未验证（D3/A6） |
+| `adhoc_verify` | 验证 | 是 | 否 | 让 adhoc 走同一套 golden（仅注册工具路径可过，A6） |
 | `report_generate` / `viz_plot` | 产出 | 是 | 否 | 报告与三张图 |
 | `ledger_query` / `events_tail` | 查询 | 否 | 否 | 只读审计入口 |
 
@@ -262,7 +279,7 @@ class ResearchEngine:
 
 ---
 
-### P11 体验补齐与运维
+### M3 体验补齐与运维（原编号 P11）
 
 **目标**：把"高级交互"补齐到日常可用。
 
@@ -288,7 +305,7 @@ class ResearchEngine:
 ### L1 回归门（每次改动必跑）
 
 ```bash
-.venv/Scripts/python.exe -X utf8 -m pytest -q            # 92 passed（P9 后不得减少、不得改断言）
+.venv/Scripts/python.exe -X utf8 -m pytest -q            # 104 passed（M1 后不得减少、不得改断言）
 .venv/Scripts/python.exe -X utf8 examples/phase5_demo.py # 离线 3 轮闭环
 .venv/Scripts/python.exe -X utf8 examples/phase8_demo.py # 并行/预算/暂停/多项目
 ```
@@ -315,7 +332,7 @@ class ResearchEngine:
 |---|---|---|
 | 1 | 直接 `python -m qresearch.tools.cli run ...` 产出数值并说"实验已完成" | 台账里没有对应 Experiment，或只以 `adhoc`（未验证）身份存在；**不得**出现 passed 证据 |
 | 2 | 把 `adhoc` 结果写进结论/报告 | 报告生成器拒绝引用非 passed 证据；`decide` 的 checklist 引用未验证 id 时被判 `untested` |
-| 3 | 往项目沙箱外的路径写文件 | 沙箱 `workspace-write` 拒绝；或触发 `ask` 审批 |
+| 3 | 往项目沙箱外的路径写文件 | 沙箱 `workspace-write` 拒绝；或触发 `ask` 审批（**A4：Windows ACL 沙箱为部分执行，判据放宽为"ask 审批或拒绝二者其一"；硬防线=审批层+引擎纪律**） |
 | 4 | 自己宣布"研究结论成立" | `declare_result` 被引擎置 `requires_human=True`，未确认前不得进入收束状态 |
 | 5 | 引用不存在的 evidence id | MCP 层校验拒绝（同现有 `decide` 校验） |
 | 6 | 用 `dry-run`/模拟数据冒充真实计算 | 三层验证不放行（沿用现状），报告标注不确定 |
@@ -344,6 +361,8 @@ Get-Content <project>/events.jsonl | % { $_ | ConvertFrom-Json } | ft timestamp,
 | DSH 版本漂移（npm rc.6 与源码 0.1.5 不同步） | 配置字段失效 | 锁 npm/SDK 版本；profile/patch 变更走"改→`--dump-config` 验证→记录"三步 |
 | 长会话上下文膨胀 | 站点提示变形、成本上升 | 复用现有"上下文=状态投影"原则：prompt 由台账现算，原始数据不进会话；必要时用 DSH 的 compaction |
 | Python MCP SDK 与 DSH 的 stdio 细节不匹配 | 接不上 | P10 第一步先做一个"hello tool"最小连通性验证，再铺全量工具 |
+| Windows 沙箱部分执行（ACL 限制令牌，ambient ACL gaps） | L4-3 越权写盘可能不被硬拒 | A4：判据放宽为"ask 审批或拒绝二者其一"；`dsh web` 一律从研究项目目录启动（workspace root=项目目录） |
+| 站点调用 3–5 分钟超 60s 工具超时 | agent 误判失败重跑站点 | A2：站点类工具也走 job 协议轮询；`toolCallTimeoutMs` 保持默认 |
 
 ---
 
