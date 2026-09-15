@@ -95,7 +95,11 @@ class ExperimentManager:
         self.storage = storage
         self.event_log = event_log
         self.runner = runner or SubprocessToolRunner()
-        self.root = Path(experiments_root or ROOT / "research_data" / "experiments")
+        # resolve()：workspace 路径会传给**子进程**，而子进程 cwd 是实验目录
+        # 本身——相对 experiments_root（如会话默认的 research_data/proj_x/…）在
+        # 子进程里解析到错误位置，inputs.json 明明在却打不开（2026-09-15 实测：
+        # 交互式会话默认 data-root 下 27 个实验全部 FileNotFoundError）。
+        self.root = Path(experiments_root or ROOT / "research_data" / "experiments").resolve()
         self.default_timeout_s = default_timeout_s
         load_seed_tools()
 

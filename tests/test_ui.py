@@ -409,3 +409,91 @@ def test_approval_warns_on_external_doc_edit(tmp_path, make_scripted_client,
     out = capsys.readouterr().out
     assert "会话外被修改" in out and "[e]" in out
     assert final.status == PlanStatus.REJECTED
+
+
+def test_approval_enter_is_not_approve(tmp_path, make_scripted_client,
+                                       monkeypatch, capsys):
+    """回车 ≠ 批准（2026-09-15 实测：回车落进意见通道像卡死）——明示按键语义后重问。"""
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    client = _approve_client(make_scripted_client, [PLAN_OK])
+    plan = _make_plan("p_enter")
+    plan.status = PlanStatus.AWAITING_APPROVAL
+    storage.save(plan)
+
+    ANS = iter(["", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(ANS))
+    from qresearch.loop import _interactive_approval
+    final = _interactive_approval(storage, log, plan, client=client,
+                                  goal=Goal(project_id="p_enter", question="q",
+                                            success_criteria=["s"]),
+                                  hypotheses=[], retries=0)
+
+    out = capsys.readouterr().out
+    assert "回车不批准" in out and "批准请按 y" in out
+    assert final.status == PlanStatus.REJECTED and final.version == 1
+    assert not [e for e in log.events() if e.action == "plan_feedback"]
+
+
+def test_approval_stray_char_not_feedback(tmp_path, make_scripted_client,
+                                          monkeypatch, capsys):
+    """单字符（手滑 t）不再被当成修改意见烧掉一轮 plan↔critic 修订。"""
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    client = _approve_client(make_scripted_client, [PLAN_OK])
+    plan = _make_plan("p_stray")
+    plan.status = PlanStatus.AWAITING_APPROVAL
+    storage.save(plan)
+
+    ANS = iter(["t", "q"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(ANS))
+    from qresearch.loop import _interactive_approval
+    final = _interactive_approval(storage, log, plan, client=client,
+                                  goal=Goal(project_id="p_stray", question="q",
+                                            success_criteria=["s"]),
+                                  hypotheses=[], retries=0)
+
+    out = capsys.readouterr().out
+    assert "不像修改意见" in out
+    assert final.status == PlanStatus.REJECTED and final.version == 1
+    assert not [e for e in log.events() if e.action == "plan_feedback"]
+
+
+def test_approval_shows_critic_issues(tmp_path, make_scripted_client,
+                                      monkeypatch, capsys):
+    """critic 判 revise 送审时，问题清单必须展示（此前 9 个问题从未让审批人看见）。"""
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    client = _approve_client(make_scripted_client, [PLAN_OK])
+    plan = _make_plan("p_issues")
+    plan.status = PlanStatus.AWAITING_APPROVAL
+    storage.save(plan)
+
+    ANS = iter(["y"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(ANS))
+    from qresearch.loop import _interactive_approval
+    final = _interactive_approval(
+        storage, log, plan, client=client,
+        goal=Goal(project_id="p_issues", question="q", success_criteria=["s"]),
+        hypotheses=[], retries=0,
+        critique_verdict="revise",
+        critique_issues=[{"severity": "blocker", "step_id": "step_1",
+                          "description": "缺少收敛性检查"}])
+
+    out = capsys.readouterr().out
+    assert "critic 判定：revise（1 个问题）" in out
+    assert "缺少收敛性检查" in out and "blocker" in out
+    assert final.status == PlanStatus.APPROVED
+
+
+def test_framed_prompt_renders_box():
+    """输入提示带两线框（2026-09-15 实测反馈：滚动输出里找不到输入位置）。"""
+    from qresearch.ui.prompt import framed_block, framed_prompt
+
+    p = framed_prompt("审批：[y]批准 / [q]放弃：")
+    lines = p.splitlines()
+    assert lines[0] == lines[2] and set(lines[0]) == {"─"}
+    assert lines[1].startswith("※ 审批：[y]批准 / [q]放弃：")
+    assert lines[3] == ">> "
+    b = framed_block("输入修改意见")
+    assert b.splitlines()[2] == b.splitlines()[0]

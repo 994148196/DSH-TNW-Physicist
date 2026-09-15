@@ -249,6 +249,22 @@
 - **M2 完成标志**：L2 离线断言全过（smoke + pytest 双通道）；L4 反例的 MCP 面种子已入测试（L4-1/2/4/6 对应 adhoc/结论/检查项语义；L4-3 留待 live，L4-5 引用校验在 decide validator）；**L3 待人工**：`dsh --profile research` 五步走查（见计划 §4.2 M2 检验 4）。
 
 
+### 2026-09-15（L3 第二轮实测三修复：工具子进程相对路径 / ANALYZE 零资格死锁 / 输入框两线框）
+- **工具子进程相对路径 bug（本轮 27 个实验全败的根因，框架级）**：交互式会话默认 `--data-root research_data`（相对路径）→ `experiments_root` 相对 → `inputs.json` 路径以相对串传给工具子进程，而子进程 `cwd=workspace` 自身 → 在子进程里解析到错误位置，`FileNotFoundError`（文件明明在）。phase8 demo 未触发是因为其 root 走 `ROOT`（绝对）。修复：`ExperimentManager.root` 一律 `.resolve()`（Slurm runner 同享）；27 个失败台账保留（诚实记录），重跑即好。
+- **ANALYZE 零资格死锁**：全部实验失败 → 可引用实验区渲染"（本轮无已通过验证的实验）"，而 prompt 只说 experiment_ids 输出空数组、schema 却要求每条 observation 至少挂 1 个 id——模型被两条矛盾指令夹住，3 次尝试全 ValidationError → needs_human。修复 prompt 契约：零资格时 observations 与 interpretations 都必须为空数组（id 无处可挂），本轮教训写进 uncertainties。
+- **输入框两线框**（用户反馈："一堆字里看不见在哪输入"）：新增 `ui/prompt.py`（`framed_prompt`/`framed_block`，纯制表符 + GBK 兼容 ※，宽度取终端实宽）；接入 REPL 主提示、开题确认环、审批菜单、[e] 回读确认、多行意见引导、轮末插话、/resume 轮数询问——每个交互点渲染为"上线/※ 提示/下线/>> 光标"。
+- **报告"核心结果"置顶**（用户反馈：结果不该埋在实验表里）：研究总结节在状态/结论之后新增**核心结果**块——有通过验证的实验则逐条列关键数值（E0/e0/gap…，最多 8 条+余数指引）；**全失败时明说"无通过验证的实验（失败 N/M，首要原因：…）"**（首要原因=失败错误聚类众数；experiment row 增加 error 字段）。不再出现"开头只有状态、结果要翻到实验表才知道全败了"。
+- **计划宁简勿繁**（用户反馈：计划过于复杂）：PLAN prompt 首条要求=第一版计划是**最小可信实验集**（通常 ≤6 步、单点先行、扫描小网格 2–3 取值，先回答"算得通+对照吻合"再扩展）；CRITIC 新增攻击点：过度规划（第一轮大网格/大量同质步骤）按 blocker 处理。
+- **测试 +2（153→155）**：报告核心结果置顶（成功列数值）/ 全失败给首要原因（换 FailingRunner 离线验证全败闭环：失败→analyze 零资格空数组→decide）/ 输入框渲染契约。
+
+
+### 2026-09-15（审批菜单语义修复：回车≠批准 / 单字符不进修订环 / critic 问题首次可见）
+- **动机**（L3 走查第二轮实测）：审批菜单按回车被落进"意见通道"（空文本→"空意见，未修订"→重出菜单），审批人以为回车=同意，感觉"一直在思考没在跑"；随后单字符手滑（想按 y 打成 t）被当成修改意见，白白触发一轮数分钟的 plan↔critic 修订；且 critic 判 revise 送审时的 9 个问题从未展示，审批人不知道 critic 在纠结什么、也不知道等待花在哪。台账回放证实全程无卡死——每个站点调用 1~3.5 分钟（understand 1min → hypothesize 3.3min → plan 1.4min → critic 1.7min → 自动修订再评），是真实 LLM 工作量，但 UI 没有把"在做什么、为什么不满意"讲出来。
+- **三处修复（loop.py `_interactive_approval`）**：① 空输入明示"回车不批准——批准请按 y"后重问（不落意见通道）；② 非命令单字符（len<2）按手滑处理，提示后重问——不再触发 LLM 修订环；③ critic 判 revise 送审时菜单上方列出主要问题（severity/步骤/描述，最多 3 条+余数指引）；意见通道触发修订时先打印"按意见修订计划中（约需数分钟）"。
+- **测试 +3（149→152）**：回车非批准 / 单字符非意见（均断言零 plan_feedback、版本不增）/ revise 问题清单展示。
+- **文档**：user_guide §8.2（回车语义、critic 问题展示、批准后耗时预期）。
+
+
 ### 2026-09-15（交互式会话三处结构性修复：确认环 / understand blocking 闸门 / 会话外编辑警示）
 - **动机**（L3 走查实测踩坑）：会话里误输 `y` 被当成研究问题建项目开跑；UNDERSTAND 站点**诚实**判定"问题不可解析"（constraints.blocking=true + requires_clarification 清单），但闭环不读该信号——hypothesize→plan→critic 空转 8 次调用产出 17 步垃圾计划；用户随后在会话外直接改 plan_v2.md，v3 毫无变化且无任何提示。诊断结论：**LLM 接入正常且行为正确**（台账 station_calls 可查），坏在闭环代码忽略 blocking 信号。
 - **F1 understand blocking 闸门（engine）**：`_require_parseable_goal`——understand 一返回即检查 Goal.constraints：blocking=true 或 requires_clarification 非空 → 落 `understand_blocked` 事件 → 抛 NeedsHuman（理由带澄清清单，人可照着补）。**确定性闸门**：结构化字段说话，LLM 无法"顺便"绕过；测试证实闸后零计划/零审批/零假设。UNDERSTAND prompt 增第 5 条契约：不可解析时 blocking=true + 逐项清单 + quantities 以"（待确认）"占位，**不许虚构物理系统**。

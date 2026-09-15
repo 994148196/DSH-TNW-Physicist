@@ -113,6 +113,30 @@ def _summary_section(project: Project, status: str, hypotheses: list,
     else:
         lines.append("- **结论**：（本轮运行未给出最终结论——"
                      "以 iterate/replan 收尾或中途转出；见决策记录与局限）")
+    # 核心结果紧随状态/结论放开头（2026-09-15 实测反馈：结果不该埋在实验表里；
+    # 全失败时也要把"没有结果"和首要原因明说出来，而不是只留一张空表）
+    verified = [r for r in experiment_rows if r["status"] == "completed"]
+    if verified:
+        lines.append("- **核心结果**（通过三层验证的实验关键数值；全文见实验表）：")
+        lines += [f"  - `{r['experiment_id']}` {r['tool']}（{r['step_id']}）："
+                  + ("；".join(f"{k}={v}" for k, v in r["key_results"].items())
+                     or "（无标准关键量，见 result.json）")
+                  for r in verified[:8]]
+        if len(verified) > 8:
+            lines.append(f"  - …其余 {len(verified) - 8} 条见下文实验表")
+    elif experiment_rows:
+        failed = [r for r in experiment_rows if r["status"] == "failed"]
+        top = ""
+        if failed:
+            counts: dict[str, int] = {}
+            for r in failed:
+                key = str(r.get("error") or "（无错误信息）").splitlines()[0][:80]
+                counts[key] = counts.get(key, 0) + 1
+            reason, n = max(counts.items(), key=lambda kv: kv[1])
+            top = f"，首要原因（{n}/{len(failed)}）：{reason}"
+        lines.append(f"- **核心结果**：无通过验证的实验"
+                     f"（失败 {len(failed)}/{len(experiment_rows)}{top}）。"
+                     "证据资格门：结果必须先过三层验证才可引用——下一轮应先修复失败原因。")
     if hypotheses:
         lines.append("- **假设命运**：")
         lines += [f"  { _hypothesis_fate_line(h) }" for h in hypotheses]
@@ -239,6 +263,7 @@ def _experiment_rows(experiments: list, eligible_ids: set[str],
                 for k in ("E0", "e0", "gap", "Sz2", "method") if k in result
             },
             "status": exp.status.value,
+            "error": str(exp.error or "")[:160],
         }
         all_rows.append(row)
         if exp.experiment_id in eligible_ids and exp.status.value == "completed":

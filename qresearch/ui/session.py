@@ -31,6 +31,7 @@ from qresearch.dsh_client import DSHClient
 from qresearch.memory import MemoryStore
 from qresearch.research_loop import resume_research_loop, run_research_loop
 from qresearch.ui.progress import ConsoleProgress
+from qresearch.ui.prompt import framed_prompt
 
 _BANNER = r"""
   ____                                 __
@@ -179,7 +180,7 @@ class Session:
 
     # ---------------------------------------------------------------- 运行
     def _ask_int(self, prompt: str, *, default: int) -> int:
-        raw = self._input(prompt).strip()
+        raw = self._input(framed_prompt(prompt)).strip()
         return int(raw) if raw.isdigit() else default
 
     def _round_callback(self, digest: dict) -> str | None:
@@ -191,7 +192,8 @@ class Session:
                     f" 个、新证据 {digest['evidence_this_round']} 条，"
                     f"累计 {digest['evidence_total']} 条）")
         try:
-            ans = self._input("回车继续 / 输入修改意见（注入下一轮计划）/ stop 叫停：").strip()
+            ans = self._input(framed_prompt(
+                "回车继续 / 输入修改意见（注入下一轮计划）/ stop 叫停")).strip()
         except KeyboardInterrupt:
             self._print("（轮末停止；resume_research_loop 可续跑）")
             return "stop"
@@ -211,14 +213,14 @@ class Session:
         self._print(f"项目 id：{pid}（数据目录 {self.project_dir(pid)}）")
         while True:
             if not question:
-                question = self._input(
-                    "研究问题（自然语言，写清模型/观测量/对照判据）：").strip()
+                question = self._input(framed_prompt(
+                    "研究问题（自然语言，写清模型/观测量/对照判据）")).strip()
                 if not question:
                     self._print("（已取消——未创建任何项目）")
                     return None
             self._print(f"研究问题：{question}")
-            ans = self._input(
-                "[回车]取消 / [y]以此问题开跑 / 直接输入修正后的问题：").strip()
+            ans = self._input(framed_prompt(
+                "[回车]取消 / [y]以此问题开跑 / 直接输入修正后的问题")).strip()
             if not ans:
                 self._print("（已取消——未创建任何项目）")
                 return None
@@ -319,7 +321,8 @@ class Session:
         self._print(_BANNER)
         while True:
             try:
-                line = self._input("qresearch> ").strip()
+                line = self._input(framed_prompt(
+                    "qresearch —— 输入研究问题，或 / 命令")).strip()
             except (EOFError, KeyboardInterrupt):
                 self._print()
                 return

@@ -20,6 +20,7 @@ from .stations.executors import (
     critique, plan_with_critic, transcribe_plan,
 )
 from .ui.plan_doc import save_plan_doc, split_user_notes
+from .ui.prompt import framed_block, framed_prompt
 
 
 def approve_plan(
@@ -68,7 +69,7 @@ def _show_plan_brief(plan: ResearchPlan) -> None:
 
 def _read_multiline() -> str:
     """多行意见输入：空行结束（EOF 按已输入内容提交）。"""
-    print("输入修改意见（可多行；空行结束）：")
+    print(framed_block("输入修改意见（可多行；空行结束）"))
     lines: list[str] = []
     while True:
         try:
@@ -113,6 +114,15 @@ def _interactive_approval(
     doc_text = doc_path.read_text(encoding="utf-8")
     while True:
         _show_plan_brief(plan)
+        if critique_verdict == "revise" and critique_issues:
+            # critic 没点头就送审时必须把不满摊开（2026-09-15 实测：9 个问题
+            # 从未展示，审批人不知道 critic 在纠结什么，也不知道为何等了这么久）
+            print(f"critic 判定：revise（{len(critique_issues)} 个问题）——批准前先看：")
+            for i in critique_issues[:3]:
+                print(f"  - [{i.get('severity', '?')}] {i.get('step_id') or '整体'}："
+                      f"{i.get('description', '')[:100]}")
+            if len(critique_issues) > 3:
+                print(f"  …其余 {len(critique_issues) - 3} 条见计划文档")
         print(f"计划文档：{doc_path}（可直接编辑；e 键走编辑回读流程）")
         try:  # 会话外改动检测：直接改文件必须经 [e] 读回才生效（容易踩的坑）
             if doc_path.read_text(encoding="utf-8") != doc_text:
@@ -121,11 +131,15 @@ def _interactive_approval(
         except OSError:
             pass
         try:
-            answer_raw = input(
-                "审批：[y]批准 / [c]提修改意见 / [e]编辑文档 / [s]看步骤细节 / [q]放弃：")
+            answer_raw = input(framed_prompt(
+                "审批：[y]批准 / [c]提修改意见 / [e]编辑文档 / [s]看步骤细节 / [q]放弃"))
             answer = answer_raw.strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "q"  # 无人在场/中断：绝不默认批准
+        if not answer:
+            # 2026-09-15 实测：回车不是批准（也不是意见）——必须明说，否则像卡死
+            print("（回车不批准——批准请按 y；要改计划直接打一段字或按 e）")
+            continue
         if answer.startswith("y"):
             approve_plan(storage, event_log, plan, actor=Actor.HUMAN,
                          channel=ApprovalChannel.TTY)
@@ -151,7 +165,7 @@ def _interactive_approval(
         if answer.startswith("e"):
             print(f"请在编辑器中修改 {doc_path}，保存后回到终端按回车（不改直接回车返回菜单）。")
             try:
-                input()
+                input(framed_prompt("改完保存后按回车继续"))
             except (EOFError, KeyboardInterrupt):
                 print("（取消编辑回读）")
                 continue
@@ -188,10 +202,16 @@ def _interactive_approval(
             if not notes:
                 print("（空意见，未修订）")
                 continue
+            if len(notes) < 2:
+                # 2026-09-15 实测：想按 y 手滑打成 t → 单字符被当成意见，
+                # 白白烧掉一轮 plan↔critic 修订（数分钟）。单字符宁可多问一句。
+                print(f"（{notes!r} 不像修改意见——批准请按 y；意见请写具体内容）")
+                continue
             event_log.append(Event(
                 actor=Actor.HUMAN, action="plan_feedback", project_id=plan.project_id,
                 object_type="ResearchPlan", object_id=plan.plan_id,
                 detail={"version": plan.version, "mode": "verbal", "notes": notes}))
+            print("按意见修订计划中（站点 plan → critic，约需数分钟）……")
             new_plan, crit = plan_with_critic(
                 client, plan.project_id, goal, hypotheses,
                 previous=plan, user_notes=notes,

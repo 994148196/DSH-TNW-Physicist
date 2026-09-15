@@ -84,3 +84,58 @@ def test_viz_plots_three_png(tmp_path, loop_client):
     # 重跑覆盖同一路径（确定性、可重放）
     plots2 = plot_project(storage, "proj_viz", tmp_path / "plots")
     assert [p.name for p in plots2] == [p.name for p in plots]
+
+
+def test_report_core_results_upfront(tmp_path, loop_client):
+    """核心结果放开头（2026-09-15 实测反馈：结果不该埋在实验表里）。"""
+    storage, log, summary = _run(tmp_path, loop_client, "proj_results")
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "**核心结果**" in report
+    assert report.index("**核心结果**") < report.index("## 假设")
+    # 有通过验证的实验 → 列关键数值（离线 simple_ed 产出 E0）
+    assert re.search(r"E0=", report)
+
+
+def test_report_all_failed_states_reason_upfront(tmp_path, make_scripted_client):
+    """全失败时开头明说"无通过验证的实验"并给首要原因（不再只是一张空表）。"""
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    from qresearch.experiments.manager import ToolRunError
+
+    client = make_scripted_client({
+        "understand": UNDERSTAND_OK, "hypothesize": HYP_OK,
+        "plan": PLAN_OK, "critic": [CRITIC_PASS] * 3,
+        # analyze 零资格契约：observations/interpretations 必须为空数组
+        "analyze": [Persistent(lambda prompt, session_id: json.dumps({
+            "observations": [], "interpretations": [],
+            "uncertainties": ["本轮无通过验证的实验"],
+            "alternative_explanations": [], "recommended_next_steps": ["修复工具后重试"],
+        }, ensure_ascii=False))],
+        "decide": [Persistent(_decide_factory(["replan", "terminate"]))],
+    })
+    # 让实验在执行期必败（换 runner，避免真起子进程）
+    import qresearch.experiments.manager as mgr_mod
+    from qresearch.experiments.manager import InProcessToolRunner
+
+    class FailingRunner(InProcessToolRunner):
+        def run(self, spec, inputs, workspace, timeout_s):
+            raise ToolRunError(f"工具 {spec.name} 退出码 1：FileNotFoundError: inputs.json")
+
+    real_init = mgr_mod.ExperimentManager.__init__
+
+    def patched_init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        self.runner = FailingRunner()
+
+    mgr_mod.ExperimentManager.__init__ = patched_init
+    try:
+        summary = run_research_loop(client, storage, log, "proj_fail",
+                                    "Heisenberg 链基态研究", rounds=1,
+                                    auto_approve=True)
+    finally:
+        mgr_mod.ExperimentManager.__init__ = real_init
+
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "无通过验证的实验" in report
+    assert "首要原因" in report and "FileNotFoundError" in report
+    assert report.index("**核心结果**") < report.index("## 假设")
