@@ -198,14 +198,33 @@ class Session:
         return ans or None
 
     def start_project(self, question: str, pid: str | None = None) -> dict | None:
-        """确认问题 → 完整交互式闭环（计划文档/审批/轮末插话全部在线）。"""
+        """确认问题 → 完整交互式闭环（计划文档/审批/轮末插话全部在线）。
+
+        确认环（2026-09-15 实测教训）：在确认提示符处输入的非 y 文本**就地成为
+        新的研究问题**并重新确认——而不是被当成对 y/n 的无效回答丢掉。此前 'y'
+        这类碎片在主提示符被当问题建了项目，真实问题却在确认提示符处被吞。
+        """
+        if len(question.strip()) < 8:
+            self._print(f"（这不像完整的研究问题：{question!r}——请重新描述）")
+            question = ""
         pid = pid or f"proj_{datetime.now():%Y%m%d_%H%M%S}"
         self._print(f"项目 id：{pid}（数据目录 {self.project_dir(pid)}）")
-        self._print(f"研究问题：{question}")
-        ans = self._input("以此问题开跑？[y]开跑 / [n]重新描述：").strip().lower()
-        if not ans.startswith("y"):
-            self._print("（未开跑——重新描述后再次输入即可）")
-            return None
+        while True:
+            if not question:
+                question = self._input(
+                    "研究问题（自然语言，写清模型/观测量/对照判据）：").strip()
+                if not question:
+                    self._print("（已取消——未创建任何项目）")
+                    return None
+            self._print(f"研究问题：{question}")
+            ans = self._input(
+                "[回车]取消 / [y]以此问题开跑 / 直接输入修正后的问题：").strip()
+            if not ans:
+                self._print("（已取消——未创建任何项目）")
+                return None
+            if ans.lower().startswith("y"):
+                break
+            question = ans  # 就地修正，重新确认
         client, storage, log, memory = self._open(pid)
         self.in_run = True
         self.stop_requested = False
@@ -309,6 +328,12 @@ class Session:
             if line.startswith("/"):
                 if not self.run_command(line):
                     return
+                continue
+            if len(line) < 8:
+                # 2026-09-15 实测：主提示符的碎片输入（如 'y'）会被当成研究问题
+                # 建项目开跑——垃圾进、垃圾出，烧掉整轮站点调用。宁多问一句。
+                self._print("（这不像研究问题（太短）——直接输入完整问题；"
+                            "/help 看命令）")
                 continue
             try:
                 self._install_sigint()

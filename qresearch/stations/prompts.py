@@ -50,7 +50,11 @@ UNDERSTAND = """你是量子多体物理研究的规划助手。请把用户的�
 - 提炼目标物理量（如基态能量、关联函数、序参量、能隙）；
 - 成功标准必须可判定（例如"与已知解析值对照到给定容差""至少两个系统尺寸比较"）；
 - 明确默认假设与不确定性（模型、边界条件、单位制），写进 assumptions_made；
-- 不要虚构用户没有给出的数值要求；容差类标准采用领域合理默认并在 assumptions_made 里说明。"""
+- 不要虚构用户没有给出的数值要求；容差类标准采用领域合理默认并在 assumptions_made 里说明；
+- **若用户输入不构成可解析的科研问题**（空、无模型/物理量/计算要求）：设
+  constraints.blocking=true、constraints.requires_clarification=[需用户补充的
+  逐项清单]、constraints.input_status=不可解析的原因；quantities 每项以
+  "（待确认）"前缀占位，不要虚构具体物理系统——闭环会在开跑前拦下并转人工。"""
 
 HYPOTHESIZE = """基于研究目标提出候选物理假设。每个假设必须：
 1. 可证伪——falsification_tests 写明"出现什么结果即推翻该假设"；

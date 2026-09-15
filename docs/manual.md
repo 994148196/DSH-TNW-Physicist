@@ -205,7 +205,7 @@ worker 线程并 `join(timeout)`：超时 → `_restart_harness()`（关闭旧 r
 
 | 站点 | 输出 schema | 要点 |
 |---|---|---|
-| understand | `UnderstandOutput` | 精炼问题 refined_question、目标量 quantities、成功判据 success_criteria |
+| understand | `UnderstandOutput` | 精炼问题 refined_question、目标量 quantities、成功判据 success_criteria；问题不可解析时**诚实自报** `constraints.blocking=true` + `requires_clarification` 清单（不虚构物理系统），引擎确定性闸门在假设/计划之前拦下并转人工（2026-09-15：闭环不读该信号就会机械空转的实测教训） |
 | hypothesize | `HypothesizeOutput` | n 条假设，**每条必须带 falsification_tests 与 discriminating_experiment**（模型层拒绝缺证伪试验的假设） |
 | plan | `PlanOutput` | steps（action/tools/inputs/expected_outputs）+ risks + diff_summary（修订版必须逐条说明改动）；语义 validator：tools 必须引用已注册工具、可执行动作恰好挂 1 个工具、parameter_scan 必须带 `inputs.scan={参数名:[取值...]}`；模板含动作选择指引与**记忆注入块 `{memory}`** |
 | critic | `CritiqueOutput` | verdict pass/blocker + issues；对计划做独立物理审查 |

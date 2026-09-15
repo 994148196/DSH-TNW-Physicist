@@ -277,3 +277,43 @@ def test_round_callback_stop(tmp_path, make_scripted_client):
     assert "`stopped_by_user`" in report
     # 停在第 1 轮末：只进行了 1 轮的实验
     assert actions.count("experiment_started") == 2
+
+
+# 2026-09-15 实测：用户误输入 'y'，UNDERSTAND 诚实产出 blocking 目标，
+# 但闭环不读该信号就机械往下跑（hypothesize→plan→critic 空转 8 次调用）。
+# F1 修复 = engine 确定性闸门：understand 一返回就检查 constraints.blocking。
+UNDERSTAND_BLOCKING = json.dumps({
+    "refined_question": "用户输入仅为字符 'y'，不含任何模型、物理量或计算要求",
+    "quantities": ["（待确认）基态能量 E0"],
+    "success_criteria": ["输入完备性门控：问题须明确模型与目标量"],
+    "constraints": {"blocking": True,
+                    "requires_clarification": ["模型哈密顿量", "目标物理量"],
+                    "input_status": "不可解析：用户问题为 'y'"},
+}, ensure_ascii=False)
+
+
+def test_understand_blocking_stops_loop(tmp_path, make_scripted_client):
+    """UNDERSTAND 自报 blocking → 确定性闸门转人工，不再机械传给假设/计划。"""
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    client = make_scripted_client({"understand": UNDERSTAND_BLOCKING})
+
+    summary = run_research_loop(client, storage, log, "proj_block",
+                                "y", rounds=3, auto_approve=True)
+
+    assert summary["status"] == "needs_human"
+    # 转人工理由带上澄清清单，人能直接照着补
+    assert "模型哈密顿量" in summary["reason"] and "目标物理量" in summary["reason"]
+
+    actions = [e.action for e in log.events(project_id="proj_block")]
+    assert "understand_blocked" in actions
+    # 闸门在假设/计划之前拦下：无计划/审批/分析决策事件
+    assert not any(a in actions for a in ("plan_ready", "approve", "analyze", "decide"))
+    # 结构化产物不落库：不产生假设与计划
+    assert storage.list(ResearchPlan, project_id="proj_block") == []
+    from qresearch.core.models import Hypothesis
+    assert storage.list(Hypothesis, project_id="proj_block") == []
+    # 部分结果也出报告（needs_human 状态如实标注）
+    assert actions[-1] == "report_generated"
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "需要人工介入" in report  # 部分结果也出报告，转人工状态如实标注

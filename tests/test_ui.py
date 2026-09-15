@@ -312,3 +312,100 @@ def test_session_round_callback_stop(tmp_path):
     assert session._round_callback(digest) is None
     session.stop_requested = True
     assert session._round_callback(digest) == "stop"
+
+
+# ---------------------------------------------------------------- 确认环与闸门（2026-09-15 实测修复）
+def test_session_confirm_revises_degenerate_question(tmp_path, make_scripted_client,
+                                                     monkeypatch):
+    """确认环（F2）：主提示符误输碎片 'y' → 不开跑，就地要求重述真实问题。"""
+    import qresearch.ui.session as session_mod
+    from qresearch.ui.session import Session
+
+    client = make_scripted_client({
+        "understand": UNDERSTAND_OK, "hypothesize": HYP_OK,
+        "plan": PLAN_OK, "critic": CRITIC_PASS,
+        "analyze": [Persistent(_analysis_response)],
+        "decide": [Persistent(_decide_factory(["iterate"]))],
+    })
+    monkeypatch.setattr(session_mod, "DSHClient", lambda **kw: client)
+
+    outputs: list[str] = []
+    session = Session(tmp_path, rounds=1, print_fn=outputs.append)
+    real_q = "计算一维 Hubbard 模型 L=4 的基态能量"
+    ANS = iter([real_q,   # 研究问题提示符：给出真实问题
+                "y",      # 确认：以此问题开跑
+                "y",      # 第 1 轮计划审批
+                ""])      # 轮末回车（预算耗尽收尾）
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(ANS))
+    session._input = lambda prompt="": next(ANS)
+
+    summary = session.start_project("y", pid="p_fix")
+
+    assert summary is not None and summary["status"] == "budget_exhausted"
+    assert any("这不像完整的研究问题" in o for o in outputs)
+    from qresearch.core.models import Project
+    storage = Storage(tmp_path / "p_fix" / "state.sqlite")
+    try:
+        projects = storage.list(Project, project_id="p_fix")
+        assert len(projects) == 1 and projects[0].question == real_q
+    finally:
+        storage.close()
+
+
+def test_session_confirm_cancel_creates_nothing(tmp_path):
+    """确认提示符回车 = 取消：不建项目、不建目录。"""
+    from qresearch.ui.session import Session
+    outputs: list[str] = []
+    session = Session(tmp_path, print_fn=outputs.append,
+                      input_fn=lambda prompt="": "")
+    summary = session.start_project("计算一维 Hubbard 模型的基态能量", pid="p_cancel")
+    assert summary is None
+    assert any("已取消" in o for o in outputs)
+    assert not (tmp_path / "p_cancel" / "state.sqlite").exists()
+
+
+def test_repl_rejects_fragment_input(tmp_path):
+    """REPL 主提示符的碎片输入（'y'）不再被当成研究问题建项目（F2）。"""
+    from qresearch.ui.session import Session
+    ANS = iter(["y", "/quit"])
+    outputs: list[str] = []
+    session = Session(tmp_path, print_fn=outputs.append,
+                      input_fn=lambda prompt="": next(ANS))
+    session.repl()
+    assert any("这不像研究问题" in o for o in outputs)
+    assert not list(tmp_path.glob("*/state.sqlite"))  # 没有建任何项目
+
+
+def test_approval_warns_on_external_doc_edit(tmp_path, make_scripted_client,
+                                             monkeypatch, capsys):
+    """会话外直接改计划文档（不走 [e] 读回）→ 每次提示明示警告：不读回不生效。"""
+    storage = Storage(tmp_path / "state.sqlite")
+    log = EventLog(tmp_path / "events.jsonl")
+    client = _approve_client(make_scripted_client, [PLAN_OK])
+    goal = Goal(project_id="p_ext", question="q", success_criteria=["s"])
+    plan = _make_plan("p_ext")
+    plan.status = PlanStatus.AWAITING_APPROVAL
+    storage.save(plan)
+
+    doc_path = tmp_path / "plans" / "plan_v1.md"
+
+    calls = {"n": 0}
+
+    def fake_input(prompt=""):
+        calls["n"] += 1
+        if calls["n"] == 1:  # 模拟用户绕过菜单直接改文件（2026-09-15 实测踩坑）
+            text = doc_path.read_text(encoding="utf-8")
+            doc_path.write_text(
+                text.replace("step_1", "step_1_rewritten"), encoding="utf-8")
+        return next(ANS)
+
+    ANS = iter(["s", "q"])
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    from qresearch.loop import _interactive_approval
+    final = _interactive_approval(storage, log, plan, client=client, goal=goal,
+                                  hypotheses=[], retries=0)
+
+    out = capsys.readouterr().out
+    assert "会话外被修改" in out and "[e]" in out
+    assert final.status == PlanStatus.REJECTED

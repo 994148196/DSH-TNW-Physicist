@@ -114,6 +114,12 @@ def _interactive_approval(
     while True:
         _show_plan_brief(plan)
         print(f"计划文档：{doc_path}（可直接编辑；e 键走编辑回读流程）")
+        try:  # 会话外改动检测：直接改文件必须经 [e] 读回才生效（容易踩的坑）
+            if doc_path.read_text(encoding="utf-8") != doc_text:
+                print("⚠ 检测到计划文档在会话外被修改——按 [e] 读回转录成新版本；"
+                      "不读回不会生效。")
+        except OSError:
+            pass
         try:
             answer_raw = input(
                 "审批：[y]批准 / [c]提修改意见 / [e]编辑文档 / [s]看步骤细节 / [q]放弃：")
@@ -155,6 +161,8 @@ def _interactive_approval(
                 continue
             doc_text = edited
             body_md, doc_notes = split_user_notes(edited)
+            print(f"已读取文档（{len(edited.splitlines())} 行）——转录为结构化计划，"
+                  "再过 critic 审查。")
             event_log.append(Event(
                 actor=Actor.HUMAN, action="plan_feedback", project_id=plan.project_id,
                 object_type="ResearchPlan", object_id=plan.plan_id,

@@ -27,7 +27,7 @@ from qresearch.core.models import (
 from qresearch.core.status import (Actor, ApprovalChannel, ExperimentStatus,
                                     PlanStatus, VerificationStatus)
 from qresearch.core.storage import Storage
-from qresearch.dsh_client import DSHClient
+from qresearch.dsh_client import DSHClient, NeedsHuman
 from .jobs import JobManager
 from .stations.executors import analyze as _analyze_station
 from .stations.executors import decide as _decide_station
@@ -312,7 +312,29 @@ class ResearchEngine:
         self.event_log.append(Event(actor=Actor.SYSTEM, action="save",
                                     project_id=project_id, object_type="Goal",
                                     object_id=st.goal.goal_id, detail={}))
+        self._require_parseable_goal(project_id, st.goal)
         return st.goal
+
+    def _require_parseable_goal(self, project_id: str, goal: Goal) -> None:
+        """UNDERSTAND 自报"问题不可解析"时在假设/计划之前拦下（转人工）。
+
+        2026-09-15 实测：用户在会话里误输入 'y'，UNDERSTAND 诚实地产出占位目标
+        （constraints.blocking=true + requires_clarification 清单）——但闭环不读
+        这个信号就会机械地把垃圾往下传（hypothesize→plan→critic 空转 8 次调用）。
+        确定性闸门：结构化字段说话，LLM 无法"顺便"绕过。
+        """
+        c = goal.constraints or {}
+        clarify = [str(x) for x in (c.get("requires_clarification") or [])]
+        if c.get("blocking") is not True and not clarify:
+            return
+        self.event_log.append(Event(
+            actor=Actor.SYSTEM, action="understand_blocked", project_id=project_id,
+            object_type="Goal", object_id=goal.goal_id,
+            detail={"requires_clarification": clarify,
+                    "input_status": str(c.get("input_status") or "")}))
+        reason = ("研究问题未被理解成可执行目标——请补充：" + "；".join(clarify)
+                  if clarify else "研究问题未被理解成可执行目标（blocking，无澄清清单）")
+        raise NeedsHuman("understand", goal.question, reason)
 
     def hypothesize(self, project_id: str, n: int = 3) -> list:
         st = self.state(project_id)

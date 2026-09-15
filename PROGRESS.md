@@ -4,7 +4,7 @@
 
 **一句话状态**：计划 v2 Phase 0–8 ✅ 全部完成且均经 live 验证（84→104→113 tests）。计划 v3（交互式 Agent 化，分支 `feature/interactive-agent`）：**M0/M1/M2/M3 全部 ✅**（125 tests；profile 含权限预设已落盘 `~/.dsh/profiles/research`，`--dump-config` 零警告）——待 L3 live 五步走查（人工）。
 
-最后更新：2026-09-14
+最后更新：2026-09-15
 
 ## 阶段总览
 
@@ -247,6 +247,15 @@
 - **`examples/mcp_smoke.py`**：真实 stdio 子进程冒烟（与 DSH mcp-client 同契约）——22 工具清单 / research_open / **只读工具字节级零写入**（L2）/ A1 仲裁 / 错误形状 / adhoc_verify job 协议与后台失败可查。
 - **`tests/test_mcp_server.py` 6 项**：工具面与 A1 schema（无 actor 参数）/ 只读零写入 / A1 仲裁+TTY 守卫全链（MCP 查→CLI 写→MCP 再查）/ D5 未批禁执行 / **A2 全链**（understand→hypothesize→plan_create→CLI 批准→experiments_run(幂等)→verify→ledger→analyze→decide(declare_result, requires_human)→CLI conclude(幂等)→报告 concluded）/ adhoc 诚实边界。测试 113→**119 passed**。
 - **M2 完成标志**：L2 离线断言全过（smoke + pytest 双通道）；L4 反例的 MCP 面种子已入测试（L4-1/2/4/6 对应 adhoc/结论/检查项语义；L4-3 留待 live，L4-5 引用校验在 decide validator）；**L3 待人工**：`dsh --profile research` 五步走查（见计划 §4.2 M2 检验 4）。
+
+
+### 2026-09-15（交互式会话三处结构性修复：确认环 / understand blocking 闸门 / 会话外编辑警示）
+- **动机**（L3 走查实测踩坑）：会话里误输 `y` 被当成研究问题建项目开跑；UNDERSTAND 站点**诚实**判定"问题不可解析"（constraints.blocking=true + requires_clarification 清单），但闭环不读该信号——hypothesize→plan→critic 空转 8 次调用产出 17 步垃圾计划；用户随后在会话外直接改 plan_v2.md，v3 毫无变化且无任何提示。诊断结论：**LLM 接入正常且行为正确**（台账 station_calls 可查），坏在闭环代码忽略 blocking 信号。
+- **F1 understand blocking 闸门（engine）**：`_require_parseable_goal`——understand 一返回即检查 Goal.constraints：blocking=true 或 requires_clarification 非空 → 落 `understand_blocked` 事件 → 抛 NeedsHuman（理由带澄清清单，人可照着补）。**确定性闸门**：结构化字段说话，LLM 无法"顺便"绕过；测试证实闸后零计划/零审批/零假设。UNDERSTAND prompt 增第 5 条契约：不可解析时 blocking=true + 逐项清单 + quantities 以"（待确认）"占位，**不许虚构物理系统**。
+- **F2 会话确认环（ui/session.py）**：`start_project` 升级为确认循环——确认提示符处**直接输入修正后的问题就地替换**并重新确认（回车取消/y 开跑）；主提示符 <8 字符的碎片输入（如 `y`）直接提示"这不像研究问题"不再建项目。根因：此前主提示符的碎片成为问题、真实问题却在确认提示符被当无效回答吞掉。
+- **F4 会话外编辑警示（loop.py）**：审批循环每次提示前比对计划文档内容，检测到会话外修改即明示"⚠ 不按 [e] 读回不会生效"；[e] 读回路径补"已读取文档（N 行）→ 转录 → critic"确认行。（v3 没变的直接原因：编辑没删掉污染的 constraints 块且无任何生效提示。）
+- **测试 +5（144→149）**：`test_understand_blocking_stops_loop`（needs_human + 澄清清单 + 零计划/零假设 + 报告如实标注）；会话确认环（碎片 'y' → 就地改述真实 Hubbard 问题 → Project.question 正确）；确认取消不建目录；REPL 碎片输入零项目；审批循环会话外编辑警告。
+- **文档**：user_guide §3.3（确认环语义 + understand 拦截 + 会话外编辑必须走 [e]）；manual 站点表 understand 行（诚实自报 blocking 契约）。
 
 
 ### 2026-09-15（审批通道与保真度审计 + dsh_client 两处修复）
