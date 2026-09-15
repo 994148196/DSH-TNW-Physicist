@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import shutil
 import sys
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -74,10 +75,17 @@ def build_tool(
     auto_approve: bool = False,
     builds_root: str | Path | None = None,
     client_factory: "Callable[[Path], DSHClient] | None" = None,
+    reuse_attempt: int | None = None,
 ) -> BuildResult:
     """client_factory：live 编码用——每轮 attempt 以 cwd=workspace 新建 runtime，
     保证 agent 的工作目录就是交付目录（对单 client 依赖 prompt 里的绝对路径不可靠：
-    Windows 反斜杠路径易被误读为相对路径）。离线脚本测试用注入 client 即可。"""
+    Windows 反斜杠路径易被误读为相对路径）。离线脚本测试用注入 client 即可。
+
+    reuse_attempt：断点续构。设为 N 时，若 ``attempt_N/tool_module.py`` 已存在则
+    **跳过该轮的编码站调用**，直接复用交付物进入 golden → 验证 → 批评者 → 人工审批。
+    用于「编码站已写好代码、但站点调用未干净返回导致 build_tool 中断」的情形
+    （见本模块顶部与本参数的实现注释）。为 None 时行为与原先完全一致。
+    """
     from typing import Callable
 
     from .spec import ToolBuildSpec
@@ -110,6 +118,13 @@ def build_tool(
     module_path: Path | None = None
     failures: list[str] = []
     attempt_no = 0
+    # 运行期随机前缀：DSH 的 session 是**持久化**的，同一个 id 第二次创建会直接抛
+    # JsonRpcError("session ... already exists")。原先 run_agent 的 session 名只含
+    # {project_id}:build:a{n}，于是**第二次构建同一个工具必然在 2 秒内失败**
+    # （实测 2026-09-15：重跑 hubbard_ed 时 a0 冲突，编码站调用当场报错）。
+    # call_station 早就有实例级 nonce（见 dsh_client 的 _session_nonce），
+    # run_agent 这条路径漏了——补上，使每次构建都是全新会话。
+    run_nonce = uuid.uuid4().hex[:8]
     for attempt_no in range(1, max_repair_rounds + 1):
         workspace = builds / spec.tool / f"attempt_{attempt_no}"
         workspace.mkdir(parents=True, exist_ok=True)
@@ -119,16 +134,65 @@ def build_tool(
                 failures="\n".join(f"  - {f}" for f in failures)
             )
         prompt = prompt.replace("（每轮尝试的独立目录，见会话分配）", workspace.as_posix())
-        if client_factory is not None:
-            build_client = client_factory(workspace)
-            try:
-                build_client.run_agent(prompt, session_id=f"{project_id}:build:a{attempt_no - 1}")
-            finally:
-                build_client.close()
+        station_error: str | None = None
+        if reuse_attempt is not None and attempt_no == reuse_attempt and (
+            workspace / "tool_module.py"
+        ).exists():
+            # 断点续构：编码站已经产出交付物，但**站点调用没有干净返回**（本平台已记录
+            # 的 runtime 断链：站点看门狗耗尽后抛错，异常穿透 build_tool，于是交付物
+            # 留在 attempt_N/ 而 tool_build_attempt 事件从未落账）。此时重跑编码站既
+            # 费时又可能再撞同一缺陷，而交付物已存在——直接复用它，后续所有环节
+            # （加载 → golden → 三层验证 → 批评者 → 人工审批 → 注册 → 安装 fixtures）
+            # 走的是**完全相同**的代码路径，因此注册结果与一次跑通无差别。
+            event_log.append(Event(
+                actor=Actor.SYSTEM, action="tool_build_reuse_attempt", project_id=project_id,
+                object_type="ToolCandidate", object_id=candidate_name,
+                detail={"attempt": attempt_no,
+                        "module": str(workspace / "tool_module.py"),
+                        "reason": "复用编码站已产出的交付物，跳过编码站调用"},
+            ))
+            print(f"[续构] attempt_{attempt_no} 已有 tool_module.py，跳过编码站，"
+                  f"直接进入 golden/验证/批评者/审批")
         else:
-            client.run_agent(prompt, session_id=f"{project_id}:build:a{attempt_no - 1}")
+            # 编码站调用。**站点故障不得吞掉已产出的交付物**：本平台已记录 runtime
+            # 断链（看门狗耗尽后 StationTimeout/StationRuntimeError），而异常穿透
+            # build_tool 会让整次构建崩掉——实测两次 hubbard 构建就是这么丢的：
+            # 编码站其实已经把 tool_module.py 写进 workspace，但事件流里连
+            # tool_build_attempt 都没有，交付物从此无人问津、白跑一遍。
+            # 这里降级为"记一笔、继续走下游"：交付物存在就照常评测（坏的地方由
+            # golden 抓出来回喂下一轮），只有连交付物都没有才算这一轮真的失败。
+            try:
+                if client_factory is not None:
+                    build_client = client_factory(workspace)
+                    try:
+                        build_client.run_agent(
+                            prompt,
+                            session_id=f"{project_id}:build:{run_nonce}:a{attempt_no - 1}")
+                    finally:
+                        build_client.close()
+                else:
+                    client.run_agent(
+                        prompt,
+                        session_id=f"{project_id}:build:{run_nonce}:a{attempt_no - 1}")
+            except Exception as exc:  # noqa: BLE001 —— 站点故障按可恢复处理
+                station_error = f"{type(exc).__name__}: {exc}"
+                module_exists = (workspace / "tool_module.py").exists()
+                event_log.append(Event(
+                    actor=Actor.SYSTEM, action="tool_build_station_failed",
+                    project_id=project_id, object_type="ToolCandidate",
+                    object_id=candidate_name,
+                    detail={"attempt": attempt_no, "phase": "coding_station",
+                            "error": station_error, "module_exists": module_exists},
+                ))
+                print(f"[警告] attempt_{attempt_no} 编码站调用失败：{station_error}")
+                print(f"        交付物是否存在：{module_exists}"
+                      f"{' —— 继续评测已产出的交付物' if module_exists else ' —— 本轮真的失败'}")
 
         module_path = workspace / "tool_module.py"
+        if station_error is not None and not module_path.exists():
+            failures = [f"编码站调用失败且未产出 tool_module.py：{station_error}"]
+            golden_report = None
+            continue
         try:
             if not module_path.exists():
                 raise FileNotFoundError("未找到交付文件 tool_module.py（必须在当前工作目录）")
@@ -190,31 +254,61 @@ def build_tool(
     overall = _worst(verification_items)
 
     # ---- 批评者：diff vs Spec（读交付代码全文）
-    critic = client.call_station(
-        "tool_critic", project_id, CritiqueOutput,
-        TOOL_CRITIC.format(
-            spec_digest=spec.digest(), code=module_path.read_text(encoding="utf-8")
-        ),
-        event_log=event_log,
-    )
-    event_log.append(Event(
-        actor=Actor.MODEL, action="tool_critic", project_id=project_id,
-        object_type="ToolCandidate", object_id=candidate_name,
-        detail={"verdict": critic.verdict,
-                "issues": [i.model_dump() for i in critic.issues]},
-    ))
+    # 批评者是注册的**必要条件**（计划 v2 §8 的三道关之一：流程 + 批评者 + 人工批准），
+    # 所以它失败时既不能注册、也不该弹审批。但同样不该让站点故障吞掉整次构建：
+    # golden 与三层验证的成果要保住，人可带 --resume 只补跑这一关。
+    # 实测该站点在本机冷 runtime 上第一次调用必挂 900s 超时，重试才成。
+    critic = None
+    try:
+        critic = client.call_station(
+            "tool_critic", project_id, CritiqueOutput,
+            TOOL_CRITIC.format(
+                spec_digest=spec.digest(), code=module_path.read_text(encoding="utf-8")
+            ),
+            event_log=event_log,
+        )
+    except Exception as exc:  # noqa: BLE001 —— 站点故障按"批评者缺席"处理
+        event_log.append(Event(
+            actor=Actor.SYSTEM, action="tool_critic_failed", project_id=project_id,
+            object_type="ToolCandidate", object_id=candidate_name,
+            detail={"phase": "critic_station", "error": f"{type(exc).__name__}: {exc}"},
+        ))
+        print(f"[警告] 批评者站点调用失败：{type(exc).__name__}: {exc}")
+
+    if critic is not None:
+        event_log.append(Event(
+            actor=Actor.MODEL, action="tool_critic", project_id=project_id,
+            object_type="ToolCandidate", object_id=candidate_name,
+            detail={"verdict": critic.verdict,
+                    "issues": [i.model_dump() for i in critic.issues]},
+        ))
 
     # ---- 构建报告 + 审批（人工触点：注册是受控词汇变更）
-    registered = overall is VerificationStatus.PASSED and not any(
-        i.severity == "blocker" for i in critic.issues
+    # 批评者缺席 → 三道关缺一不可 → 一律不注册，也不进入审批（避免产生一条
+    # 语义含糊的 approve/reject 事件）。
+    registered = (
+        overall is VerificationStatus.PASSED
+        and critic is not None
+        and not any(i.severity == "blocker" for i in critic.issues)
     )
-    approved = auto_approve or _approve_interactive(spec.tool, overall, critic.verdict)
-    event_log.append(Event(
-        actor=Actor.SYSTEM if auto_approve else Actor.HUMAN,
-        action="approve_tool" if approved else "reject_tool",
-        project_id=project_id, object_type="ToolCandidate", object_id=candidate_name,
-        detail={"note": "auto-approve（演示/测试用，非人工）" if auto_approve else ""},
-    ))
+    if critic is None:
+        approved = False
+        event_log.append(Event(
+            actor=Actor.SYSTEM, action="tool_build_aborted_no_critic",
+            project_id=project_id, object_type="ToolCandidate", object_id=candidate_name,
+            detail={"reason": "批评者站点故障；三道关缺一不可，不予注册。"
+                              "可带 reuse_attempt 重跑以只补这一关。"},
+        ))
+        print("[中止] 批评者未给出裁决（站点故障）→ 不予注册；"
+              "交付物与验证结果已保留，可带 --resume 重跑只补这一关。")
+    else:
+        approved = auto_approve or _approve_interactive(spec.tool, overall, critic.verdict)
+        event_log.append(Event(
+            actor=Actor.SYSTEM if auto_approve else Actor.HUMAN,
+            action="approve_tool" if approved else "reject_tool",
+            project_id=project_id, object_type="ToolCandidate", object_id=candidate_name,
+            detail={"note": "auto-approve（演示/测试用，非人工）" if auto_approve else ""},
+        ))
 
     if approved and registered:
         final_spec = ToolSpec(
@@ -237,6 +331,10 @@ def build_tool(
         status = "registered"
     else:
         status = "rejected"
+        # 未注册即清理候选名：候选名是构建期的临时词汇，残留会污染工具词汇表
+        # （后续会话看到 candidate_* 会以为是可用工具）。原实现只在"修复耗尽"
+        # 分支清理，凡是走到批评者/审批之后被拒的路径都会漏掉这一条。
+        unregister(candidate_name)
 
     report_path = _write_report(
         builds, spec, candidate_name, status=status, attempts=attempt_no,
@@ -248,13 +346,15 @@ def build_tool(
         action="tool_registered" if status == "registered" else "tool_build_rejected",
         project_id=project_id, object_type="Tool", object_id=spec.tool,
         detail={"status": status, "attempts": attempt_no,
-                "verification_overall": overall.value, "critic": critic.verdict},
+                "verification_overall": overall.value,
+                "critic": critic.verdict if critic is not None else None,
+                "critic_absent": critic is None},
     ))
     return BuildResult(
         tool=spec.tool, candidate_name=candidate_name, status=status,
         attempts=attempt_no, workspace=builds / spec.tool, report_path=report_path,
         golden_passed=True, verification_overall=overall.value,
-        critic_verdict=critic.verdict,
+        critic_verdict=critic.verdict if critic is not None else None,
     )
 
 
@@ -285,7 +385,10 @@ def _write_report(builds, spec, candidate_name, *, status, attempts,
     critic_section = (
         f"verdict={critic.verdict}；issues："
         + "; ".join(f"[{i.severity}] {i.description}" for i in critic.issues)
-        if critic is not None else "未进行（golden 未通过）"
+        if critic is not None
+        else ("未进行（批评者站点故障；golden 与三层验证已通过，因三道关缺一不予注册）"
+              if verification_items is not None
+              else "未进行（golden 未通过）")
     )
     text = REPORT.format(
         tool_name=spec.tool, purpose=spec.purpose, status=status, attempts=attempts,

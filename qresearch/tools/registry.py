@@ -74,3 +74,4 @@ def load_seed_tools() -> None:
     from . import simple_ed  # noqa: F401  注册 simple_ed
     from . import dmrg_adapter  # noqa: F401  注册 dmrg_adapter
     from . import tfim_ed  # noqa: F401  注册 tfim_ed（Phase 6 构建晋升）
+    from . import hubbard_ed  # noqa: F401  注册 hubbard_ed（Tool Builder 晋升）

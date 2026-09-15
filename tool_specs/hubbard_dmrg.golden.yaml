@@ -1,0 +1,150 @@
+# golden 基准：hubbard_dmrg（spec 先行——本文件先于工具实现定稿，出题人≠答题人）
+#
+# 约定：H = -t Σ_{i=0}^{L-2} Σ_σ (c†_{iσ}c_{i+1,σ} + h.c.) + U Σ_i n_{i↑}n_{i↓}
+#       开放边界；固定 (n_up, n_down) 扇区。与 hubbard_ed 逐条一致。
+# 数值来源：
+#   - 解析：U=0 自由费米子 → ε_k = -2t cos(kπ/(L+1))；E0 = Σ_σ Σ_{k≤n_σ} ε_k
+#   - 跨实现：against: hubbard_ed（扇区精确对角化，独立实现路径）逐案差分
+#   - 记录事实：L=4 半满时 bond_dimension_max=16（chi_max 请求 256）
+#              来源 AI_TNW runs/20260910T140319Z/B4_L4_U4/result.json
+#              （该记录同时给出 truncation_error=0.0；其 energy_variance 记 0.0 是
+#                该后端已把原始负舍入量钳到 0 之后的值）
+# 工具注册前由 Tool Builder 以 tool_override 运行本文件；注册后安装到 benchmarks/golden/。
+tool: hubbard_dmrg
+against: hubbard_ed
+cases:
+  # ---------------------------------------------------------------- 软件层
+  - name: execution_path_recorded_L4
+    layer: software
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 64}
+    checks:
+      # 实际走的执行路径必须留痕且取值受限：引擎 venv 是 Python 3.13，装不了
+      # physics-tenpy 1.1.1 的 cp312 编译轮子，所以实现必须显式声明它走的是
+      # 进程内 tenpy 还是委派子进程（见 spec 的 execution_environment 条款）
+      - {op: field_present, field: execution_path}
+      - {op: field_matches, field: execution_path, pattern: "^(in_process|subprocess:.+)$"}
+      - {op: field_present, field: tenpy_version}
+
+  - name: chi_max_requested_echoed_L4
+    layer: software
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 64}
+    checks:
+      # 请求值必须原样回传，便于分辨"实际用量 < 请求值"是饱和还是被截断
+      - {op: approx, field: chi_max_requested, value: 64.0, tol: 0.0}
+
+  # ---- 以下两条由 Tool Builder 批评者（2026-09-15）暴露的缺陷回填而成 ----
+  # 批评者指出：候选未显式处理 TeNPy 的 max_trunc_err 一致性守卫（默认 1e-4），
+  # 于是低 chi 的**合法**输入在 sweep 末尾抛 TenpyInconsistencyError；而 spec 明确
+  # chi_max 合法区间是 [4,512]，且「增大 chi 结果是否变化」正是本项目要研究的量，
+  # 低 chi 端崩溃会让该研究无法进行。补上这两条，使其成为 golden 可判定的失败。
+  - name: low_chi_returns_variational_bound_L4
+    layer: software
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 4}
+    checks:
+      # chi_max=4 是允许区间的下界。要求：能正常返回（不得抛异常），且返回的是
+      # 变分上界——E0 不得低于精确值（留 1e-9 浮点余量）。
+      - {op: ge, field: E0, value: -1.9531453096845543}
+      # 截断误差必须如实报出（低 chi 下必然显著非零），而不是崩溃或填 0
+      - {op: field_present, field: truncation_error}
+      - {op: ge, field: truncation_error, value: 0.0}
+
+  - name: low_chi_reports_truncation_L6
+    layer: numerical
+    inputs: {L: 6, t: 1.0, U: 4.0, n_up: 3, n_down: 3, chi_max: 4}
+    checks:
+      # 批评者实测该设置截断误差 3.28e-2，会触发默认守卫。要求返回而非崩溃。
+      - {op: ge, field: E0, value: -3.092566319505392}
+      - {op: field_present, field: truncation_error}
+      - {op: ge, field: energy_variance, value: 0.0}
+
+  - name: bond_dimension_within_request_L4
+    layer: software
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 256}
+    checks:
+      # 结构不变式：实际键维不得超过请求值。用 le + other_field 表达为真不等式，
+      # 而不是退化成"回传请求值"这类名不副实的弱检查。
+      - {op: le, field: bond_dimension_max, other_field: chi_max_requested}
+      # L=4 半满：精确态最大键维 16，故实际用量应恰为 16（远小于请求的 256）
+      # 出处：AI_TNW runs/20260910T140319Z/B4_L4_U4（chi_max_requested=256 → max 16）
+      - {op: approx, field: bond_dimension_max, value: 16.0, tol: 0.0}
+
+  # ---------------------------------------------------------------- 数值层
+  - name: energy_variance_exact_at_L4
+    layer: numerical
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 64}
+    checks:
+      # L=4 扇区维数 36，DMRG 在此尺寸是数值精确的：方差应为 0。
+      # 容差 1e-12 用于容纳 MPS 收缩的双精度舍入（1e-14 量级）。
+      - {op: approx, field: energy_variance, value: 0.0, tol: 1.0e-12}
+
+  - name: energy_variance_nonnegative_L4
+    layer: numerical
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 64}
+    checks:
+      # spec 明确要求：原始 <H²>-<H>² 会因舍入略为负，实现必须钳到 0 再输出。
+      # 这条不能与上一条 approx 合并——approx 是双侧的，原样返回负方差的实现
+      # 也能通过上一条，只有单侧 ge 才能把"钳位"与"未钳位"区分开。
+      - {op: ge, field: energy_variance, value: 0.0}
+
+  - name: truncation_error_exact_at_L4
+    layer: numerical
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 64}
+    checks:
+      - {op: approx, field: truncation_error, value: 0.0, tol: 1.0e-12}
+
+  # ---------------------------------------------------------------- 物理层
+  - name: free_fermion_L4_U0
+    layer: physics
+    inputs: {L: 4, t: 1.0, U: 0.0, n_up: 2, n_down: 2, chi_max: 64}
+    checks:
+      # ε_k = -2cos(kπ/5)，每自旋最低 2 个之和 -2.23606797749979，双自旋 → -2*sqrt(5)
+      - {op: approx, field: E0, value: -4.47213595499958, tol: 1.0e-8}
+
+  - name: free_fermion_L6_U0
+    layer: physics
+    inputs: {L: 6, t: 1.0, U: 0.0, n_up: 3, n_down: 3, chi_max: 64}
+    checks:
+      - {op: approx, field: E0, value: -6.987918414869868, tol: 1.0e-8}
+
+  - name: cross_implementation_L4_U4
+    layer: physics
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 64}
+    checks:
+      # 与精确对角化逐案差分。注意 diff 是双侧比较，比 spec 里「E0 不得低于精确基态」
+      # 的单侧变分要求更强；在 L=4 两条路径一致到 1e-15，故单侧性质自动被覆盖。
+      - {op: diff, field: E0, against_field: E0, tol: 1.0e-8}
+
+  - name: cross_implementation_L6_U4
+    layer: physics
+    inputs: {L: 6, t: 1.0, U: 4.0, n_up: 3, n_down: 3, chi_max: 128}
+    checks:
+      - {op: diff, field: E0, against_field: E0, tol: 1.0e-8}
+
+  - name: cross_implementation_L8_U4
+    layer: physics
+    inputs: {L: 8, t: 1.0, U: 4.0, n_up: 4, n_down: 4, chi_max: 128}
+    checks:
+      - {op: diff, field: E0, against_field: E0, tol: 1.0e-8}
+
+  - name: cross_implementation_off_half_filling_L4
+    layer: physics
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 3, n_down: 1, chi_max: 64}
+    checks:
+      # 非半满：排除「假设 N_up=N_dn 或 Sz=0」的实现
+      - {op: diff, field: E0, against_field: E0, tol: 1.0e-8}
+
+  - name: atomic_limit_t0_L4
+    layer: physics
+    inputs: {L: 4, t: 0.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 64}
+    checks:
+      # t=0：半满 L=4 可零双重占据（每格 1 个电子）→ E0 = 0。
+      # 注意**不是 2U**：最小双重占据数为 0（引擎 Goal 的该处表述有误）。
+      - {op: approx, field: E0, value: 0.0, tol: 1.0e-8}
+
+  - name: two_init_states_agree_L4
+    layer: physics
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2, chi_max: 64}
+    sweep: {init_state: [domain, alternating]}
+    checks:
+      # 两种合法初态必须收敛到同一能量（协议 dmrg_convergence 的要求）
+      - {op: approx, field: E0, value: -1.9531453086845543, tol: 1.0e-8}

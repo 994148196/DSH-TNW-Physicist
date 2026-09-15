@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,77 @@ def dense_tfim_ground(N: int, h: float, J: float = 1.0) -> dict[str, float]:
     evals = np.linalg.eigvalsh(H)
     return {"E0": float(evals[0]), "gap": float(evals[1] - evals[0])}
 
+
+
+def dense_hubbard_ground(
+    L: int, t: float, U: float, n_up: int, n_down: int
+) -> dict[str, float]:
+    """一维单带 Hubbard 链（开放边界）稠密对角化——独立实现。
+
+    约定（与 tool_specs/hubbard_ed.yaml 逐条一致）：
+        H = -t * sum_{i=0}^{L-2} sum_{sigma} (c^dag_{i,sigma} c_{i+1,sigma} + h.c.)
+            + U * sum_{i=0}^{L-1} n_{i,up} n_{i,dn}
+        全局模排序 0up,1up,...,(L-1)up,0dn,1dn,...,(L-1)dn；
+        c_m |n> = (-1)^{sum_{k<m} n_k} * n_m * |..., b_m = 0, ...>
+
+    本函数在 **2^{2L} 全 Fock 空间**上枚举，再按 (n_up, n_down) 取子集建矩阵，
+    不做任何对称性约化、不手工推导 Jordan-Wigner 串——与工具实现路径无关。
+    粒子数筛选只是选基，不构成物理简化的捷径。
+    """
+    n_modes = 2 * L
+    full_dim = 1 << n_modes
+
+    basis: list[int] = []
+    for state in range(full_dim):
+        up = sum((state >> m) & 1 for m in range(L))
+        dn = sum((state >> (L + m)) & 1 for m in range(L))
+        if up == n_up and dn == n_down:
+            basis.append(state)
+
+    dim = len(basis)
+    if dim == 0:
+        raise ValueError(
+            f"空扇区：L={L}, n_up={n_up}, n_down={n_down}（要求 0 <= n_sigma <= L）"
+        )
+    index = {state: k for k, state in enumerate(basis)}
+    H = np.zeros((dim, dim), dtype=float)
+
+    for k, state in enumerate(basis):
+        occ = [(state >> m) & 1 for m in range(n_modes)]
+        # ---- 在位相互作用 U * n_{i,up} n_{i,dn}
+        if U:
+            for i in range(L):
+                if occ[i] and occ[L + i]:
+                    H[k, k] += U
+        # ---- 跃迁 -t (c^dag_p c_q + c^dag_q c_p)，逐个费米子算符按右到左作用
+        if t:
+            for i in range(L - 1):
+                for spin in (0, 1):
+                    q = i + spin * L
+                    p = (i + 1) + spin * L
+                    for src, dst in ((q, p), (p, q)):
+                        if not occ[src]:
+                            continue
+                        # 第一步：c_src
+                        sign = -1.0 if (sum(occ[:src]) % 2) else 1.0
+                        mid = state & ~(1 << src)
+                        occ_mid = list(occ)
+                        occ_mid[src] = 0
+                        if occ_mid[dst]:
+                            continue
+                        # 第二步：c^dag_dst（相位按去掉 src 之后的占据数算）
+                        sign *= -1.0 if (sum(occ_mid[:dst]) % 2) else 1.0
+                        new = mid | (1 << dst)
+                        H[index[new], k] += -t * sign
+
+    # 数值安全：跃迁项成对写入，理论上严格厄米；显式对称化以消除累加舍入
+    H = 0.5 * (H + H.T)
+    evals = np.linalg.eigvalsh(H)
+    return {
+        "E0": float(evals[0]),
+        "gap": float(evals[1] - evals[0]) if dim > 1 else float("nan"),
+        "dim": dim,
+    }
 
 # ---------------------------------------------------------------- 报告对象
 @dataclass
@@ -117,9 +189,25 @@ def run_case(
             out = spec.run(inputs)
             runs.append({"inputs": inputs, "output": out})
             if against_spec is not None:
-                a_inputs = {**case.get("against_inputs", {}), **combo}
-                a_map = {"L": "N", "bc": None}
-                a_inputs = {a_map.get(k, k): v for k, v in a_inputs.items() if a_map.get(k, k)}
+                # a_inputs 以 case 的 inputs 为**默认基底**，再被 against_inputs 覆盖，
+                # 最后叠加 sweep 维度。之所以要继承：a_inputs 原实现只取
+                # against_inputs + combo，于是「同一个物理系统两条实现路径对拍」这个
+                # 最常见的情形反而必须把 inputs 逐字抄一遍；漏抄就静默退化成
+                # {"": ...} 空输入（实测表现为 pydantic 报 L/n_up/n_down 缺失，
+                # 看起来像实现缺陷，其实是接线错误）。更危险的是抄错一个数：
+                # 两条路径会去算**不同的系统**，diff 却照样给出一个数。
+                # 显式 against_inputs 仍然优先，因此需要对拍不同参数时照旧可写。
+                a_inputs = {
+                    **case.get("inputs", {}),
+                    **case.get("against_inputs", {}),
+                    **combo,
+                }
+                # 按 against 工具的实际输入字段推导（不再写死 Heisenberg 的 L->N）：
+                # 仅当对方模型有 N 而没有 L 时才做 L->N，且丢弃对方不认识的键。
+                a_fields = set(against_spec.input_model.model_fields)
+                if "N" in a_fields and "L" not in a_fields:
+                    a_inputs = {("N" if k == "L" else k): v for k, v in a_inputs.items()}
+                a_inputs = {k: v for k, v in a_inputs.items() if k in a_fields}
                 runs[-1]["against_output"] = against_spec.run(a_inputs)
     except Exception as exc:  # noqa: BLE001 —— 工具崩溃 = 该 case 所有检查 fail
         err = f"{type(exc).__name__}: {exc}"
@@ -165,6 +253,12 @@ def _apply_check(op: str, check: dict[str, Any], run: dict[str, Any]) -> tuple[b
             oracle = dense_tfim_ground(
                 run["inputs"]["N"], run["inputs"]["h"], run["inputs"].get("J", 1.0)
             )
+        elif oracle_name == "hubbard":
+            inp = run["inputs"]
+            oracle = dense_hubbard_ground(
+                inp["L"], inp.get("t", 1.0), inp.get("U", 4.0),
+                inp["n_up"], inp["n_down"],
+            )
         else:
             raise ValueError(f"未知 oracle: {oracle_name}")
         field_name = check.get("oracle_field", "E0")
@@ -173,6 +267,28 @@ def _apply_check(op: str, check: dict[str, Any], run: dict[str, Any]) -> tuple[b
         mine = float(out[check["field"]])
         theirs = float(run["against_output"][check["against_field"]])
         return _approx(mine, theirs, float(check["tol"]))
+    if op in ("le", "ge"):
+        # 不等式单侧比较：value 取标量界，或 other_field 取**另一个输出字段**作界。
+        # 例：bond_dimension_max <= chi_max_requested —— 这类不变式用 approx 表达不了，
+        # 之前只能退化成"回传请求值"的弱检查，等于名不副实。
+        value = float(out[check["field"]])
+        if "other_field" in check:
+            bound = float(out[check["other_field"]])
+            rhs = f"{check['other_field']}={bound!r}"
+        else:
+            bound = float(check["value"])
+            rhs = repr(bound)
+        ok = value <= bound if op == "le" else value >= bound
+        sign = "<=" if op == "le" else ">="
+        return ok, f"{check['field']}={value!r} {sign} {rhs} → {'成立' if ok else '不成立'}"
+    if op == "field_present":
+        ok = check["field"] in out and out[check["field"]] is not None
+        return ok, f"字段 {check['field']} {'存在' if ok else '缺失或为 null'}"
+    if op == "field_matches":
+        text = str(out[check["field"]])
+        ok = re.search(check["pattern"], text) is not None
+        return ok, (f"{check['field']}={text[:80]!r} 匹配 /{check['pattern']}/ "
+                    f"→ {'是' if ok else '否'}")
     if op == "increasing_toward":
         raise ValueError("increasing_toward 只能用于 sweep case（多组输出）")
     raise ValueError(f"未知检查 op: {op}")

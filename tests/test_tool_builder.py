@@ -193,3 +193,219 @@ def test_build_client_factory_per_attempt(tmp_path, db, make_scripted_client):
     finally:
         unregister("tfim_ed")
         unregister("candidate_tfim_ed")
+
+
+# ------------------------------------------------- 站点故障必须可恢复（不得吞掉成果）
+STATION_FAILURE = "模拟 runtime 断链：站点调用未干净返回"
+
+
+def _writer_then_raise(module: str, prompts: list[str]):
+    """先写出交付物、**再抛错** —— 精确复刻本平台实测到的失败形态。
+
+    实测两次 hubbard 构建就是这么丢的：编码站其实已经把 tool_module.py 写进了
+    workspace，但站点调用随后抛错（看门狗耗尽 StationTimeout），异常穿透
+    build_tool 使整次构建崩掉，事件流里连 tool_build_attempt 都没有，
+    已产出的交付物从此无人问津。
+    """
+
+    def _resp(prompt: str, session_id: str) -> str:
+        prompts.append(prompt)
+        workspace = Path(prompt.split("本次构建的工作目录：")[1].split("\n")[0].strip())
+        target = workspace / "tool_module.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(module, encoding="utf-8")
+        raise RuntimeError(STATION_FAILURE)
+
+    return _resp
+
+
+def test_build_station_failure_keeps_deliverable(tmp_path, db, make_scripted_client):
+    """编码站调用抛错、但交付物已落盘 → 不崩，照常评测并走完注册。"""
+    from qresearch.tool_builder import build_tool
+
+    spec_path = _spec_in_tmp(tmp_path)
+    prompts: list[str] = []
+    client = make_scripted_client({
+        "build": [_writer_then_raise(GOOD_MODULE, prompts)],
+        "tool_critic": CRITIC_PASS,
+    })
+    log = EventLog(tmp_path / "events.jsonl")
+    try:
+        result = build_tool(
+            client, db, log, spec_path,
+            max_repair_rounds=1, builds_root=tmp_path / "builds", auto_approve=True,
+        )
+        actions = [e.action for e in log.events(project_id="toolbuild_tfim_ed")]
+        assert "tool_build_station_failed" in actions, "站点故障必须如实落账"
+        assert "tool_build_attempt" in actions, "已产出的交付物必须仍然被评测"
+        assert result.status == "registered"
+        assert result.attempts == 1
+        # 注意：不能用 `"tfim_ed" in tool_names()` 断言注册成功——run_benchmark 会
+        # load_seed_tools() 把真正的 tfim_ed 种子注册进来，那条断言恒真。
+        # tool_registered 事件只在 status=="registered" 时发出，才是真凭据。
+        assert "tool_registered" in actions
+        assert "candidate_tfim_ed" not in tool_names()
+    finally:
+        unregister("tfim_ed")
+        unregister("candidate_tfim_ed")
+
+
+def test_build_station_failure_without_deliverable_fails(tmp_path, db, make_scripted_client):
+    """编码站抛错且**没有**交付物 → 这一轮真的失败（不注册、不进批评环节）。"""
+    from qresearch.tool_builder import build_tool
+
+    def _raise(prompt, session_id):
+        raise RuntimeError(STATION_FAILURE)
+
+    spec_path = _spec_in_tmp(tmp_path)
+    client = make_scripted_client({"build": [_raise]})
+    log = EventLog(tmp_path / "events.jsonl")
+    result = build_tool(
+        client, db, log, spec_path,
+        max_repair_rounds=1, builds_root=tmp_path / "builds", auto_approve=True,
+    )
+    actions = [e.action for e in log.events(project_id="toolbuild_tfim_ed")]
+    assert result.status == "failed"
+    assert result.golden_passed is False
+    assert "tool_build_station_failed" in actions
+    assert "tool_critic" not in actions
+    assert "tool_registered" not in actions
+    assert "candidate_tfim_ed" not in tool_names()
+
+
+def test_critic_failure_does_not_register(tmp_path, db, make_scripted_client):
+    """批评者站点故障 → 三道关缺一不可 → 不注册、不进审批、不留含糊的审批事件。"""
+    from qresearch.tool_builder import build_tool
+
+    def _critic_raise(prompt, session_id):
+        raise RuntimeError(STATION_FAILURE)
+
+    spec_path = _spec_in_tmp(tmp_path)
+    prompts: list[str] = []
+    client = make_scripted_client({
+        "build": [Persistent(_writer([GOOD_MODULE], prompts))],
+        "tool_critic": [_critic_raise],
+    })
+    log = EventLog(tmp_path / "events.jsonl")
+    result = build_tool(
+        client, db, log, spec_path,
+        max_repair_rounds=1, builds_root=tmp_path / "builds", auto_approve=True,
+    )
+    actions = [e.action for e in log.events(project_id="toolbuild_tfim_ed")]
+    assert "tool_critic_failed" in actions
+    assert "tool_build_aborted_no_critic" in actions
+    # 批评者缺席时不得伪造任何人/模型的审批动作
+    assert "approve_tool" not in actions
+    assert "reject_tool" not in actions
+    assert "tool_critic" not in actions
+    assert result.status == "rejected"
+    assert result.critic_verdict is None
+    assert result.golden_passed is True, "golden 与三层验证的成果必须保住"
+    assert "tool_registered" not in actions, "批评者缺席却发生了注册"
+    # 被拒路径也必须清理候选名（原实现只在"修复耗尽"分支清理，会漏）
+    assert "candidate_tfim_ed" not in tool_names()
+
+
+# ------------------------------------------- 重复构建的 session 名必须按运行隔离
+MINIMAL_SPEC = {
+    "tool": "trivial_probe",
+    "version": "0.0.1",
+    "type": "unit_test_double",
+    "purpose": "测试替身：返回固定常量，仅用于验证构建流程本身",
+    "physics_convention": "y = x（无物理含义）",
+    "inputs": {"x": {"type": "int", "bounds": "0 <= x <= 10", "desc": "输入"}},
+    "outputs": {"y": "输出 y = x"},
+    "invariants": ["y == x"],
+    "falsification_basis": ["恒等式 y = x"],
+    "anti_collusion": "测试替身，不涉及真实工具构建",
+    "known_limitations": ["仅用于流程测试"],
+}
+
+TRIVIAL_MODULE = '''\
+from pydantic import BaseModel, Field
+
+
+class Inputs(BaseModel):
+    x: int = Field(ge=0, le=10)
+
+
+def run(inputs: dict) -> dict:
+    p = Inputs(**inputs)
+    return {"y": p.x}
+'''
+
+TRIVIAL_GOLDEN = {
+    "tool": "trivial_probe",
+    "cases": [{
+        "name": "identity",
+        "layer": "software",
+        "inputs": {"x": 3},
+        "checks": [{"op": "approx", "field": "y", "value": 3.0, "tol": 0.0}],
+    }],
+}
+
+
+def _minimal_spec(tmp_path: Path) -> Path:
+    spec_dir = tmp_path / "tool_specs"
+    spec_dir.mkdir(exist_ok=True)
+    golden = spec_dir / "trivial_probe.golden.yaml"
+    golden.write_text(yaml.safe_dump(TRIVIAL_GOLDEN, allow_unicode=True), encoding="utf-8")
+    spec = dict(MINIMAL_SPEC)
+    spec["fixtures_ref"] = str(golden)
+    spec["fixtures_install_to"] = str(tmp_path / "installed" / "trivial_probe.yaml")
+    spec_path = spec_dir / "trivial_probe.yaml"
+    spec_path.write_text(yaml.safe_dump(spec, allow_unicode=True), encoding="utf-8")
+    return spec_path
+
+
+def test_build_session_ids_are_run_scoped(tmp_path, db, make_scripted_client):
+    """同一工具重复构建不得复用 DSH session 名（否则第二次构建 2 秒内就失败）。
+
+    DSH 的 session 是**持久化**的：同名再建会抛
+    ``JsonRpcError("session ... already exists")``。实测 2026-09-15 重跑 hubbard_ed
+    时 ``...:build:a0`` 冲突，编码站调用当场报错。``call_station`` 早有实例级
+    ``_session_nonce``，``run_agent`` 这条路径原本漏了——本测试守住它。
+
+    用极小的测试替身 spec，不跑稠密对角化，故耗时约 1 秒级。
+    """
+    from qresearch.tool_builder import build_tool
+
+    spec_path = _minimal_spec(tmp_path)
+    seen: list[str] = []
+
+    def _token(prompt: str, session_id: str) -> str:
+        seen.append(session_id)
+        workspace = Path(prompt.split("本次构建的工作目录：")[1].split("\n")[0].strip())
+        target = workspace / "tool_module.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(TRIVIAL_MODULE, encoding="utf-8")
+        return "done"
+
+    def _client():
+        return make_scripted_client({
+            "build": [Persistent(_token)],
+            "tool_critic": CRITIC_PASS,
+        })
+
+    try:
+        for i in range(2):
+            # 不要求 registered：测试替身的 golden 只有 software 层，三层验证会给出
+            # uncertain（这是引擎的正确行为，与本测试要守的 session 隔离无关）。
+            # 只需确认构建确实跑到了评测环节、且两轮的 session 名不同。
+            result = build_tool(
+                _client(), db, EventLog(tmp_path / f"e_{i}.jsonl"), spec_path,
+                max_repair_rounds=1, builds_root=tmp_path / "builds", auto_approve=True,
+            )
+            assert result.golden_passed is True, result.failures
+
+        build_ids = [s for s in seen if s.split(":")[1] == "build"]
+        assert len(build_ids) == 2, build_ids
+        # 两次构建的 session 名必须不同（运行期 nonce）
+        assert build_ids[0] != build_ids[1], f"重复构建复用了 session 名：{build_ids}"
+        # 且每次都是 project:build:<nonce>:aN 形态，nonce 非空
+        for sid in build_ids:
+            parts = sid.split(":")
+            assert parts[1] == "build" and len(parts) >= 4 and parts[2], sid
+    finally:
+        unregister("trivial_probe")
+        unregister("candidate_trivial_probe")

@@ -1,0 +1,93 @@
+# Tool Spec：hubbard_ed —— Phase 6 Tool Builder 的出题侧工件（先于任何实现定稿）
+#
+# 缺口来源：一维单带 Hubbard 链基态能量研究需要独立精确解，注册表中无对应工具
+# （simple_ed 是 Heisenberg、tfim_ed 是横场 Ising、dmrg_adapter 只认 Heisenberg）。
+# 铁律（计划 v2 §8）：出题人≠答题人。本文件与其引用的 golden 定值由人依据
+# 解析/文献/独立实现写定；DSH 编码站实现工具，不得修改本文件与 fixtures/容差。
+tool: hubbard_ed
+version: "1.0.0"
+type: exact_solver
+purpose: 一维单带最近邻 Hubbard 链（开放边界、固定粒子数扇区）基态能量的精确对角化
+
+physics_convention: >-
+  H = -t * sum_{i=0}^{L-2} sum_{sigma in {up,dn}}
+        ( c^dag_{i,sigma} c_{i+1,sigma} + h.c. )
+      + U * sum_{i=0}^{L-1} n_{i,up} n_{i,dn}，
+  开放边界：跃迁只对相邻对 (i, i+1)，i 从 0 到 L-2；无周期回绕，故无边界键双计。
+  不引入化学势，不做相互作用常数平移（形如 (n_up-1/2)(n_dn-1/2) 的写法必须显式
+  换算，不得直接比较输出数字）。
+  费米子约定：全局模排序 0up,1up,...,(L-1)up,0dn,1dn,...,(L-1)dn；
+  c_i |n> = (-1)^{sum_{k<i} n_k} * n_i * |..., n_i = 0, ...>，
+  c^dag_i |n> = (-1)^{sum_{k<i} n_k} * (1 - n_i) * |..., n_i = 1, ...>。
+  相邻站点之间无 Jordan-Wigner 串，故相邻跃迁系数均为 +1；
+  两种自旋反对易（标准费米子代数）。
+
+inputs:
+  L:
+    type: int
+    bounds: "2 <= L <= 12"
+    desc: 链长（格点数）
+  t:
+    type: float
+    default: 1.0
+    desc: 跃迁振幅
+  U:
+    type: float
+    default: 4.0
+    desc: 在位库仑排斥强度
+  n_up:
+    type: int
+    bounds: "0 <= n_up <= L"
+    desc: 自旋向上粒子数（固定扇区）
+  n_down:
+    type: int
+    bounds: "0 <= n_down <= L"
+    desc: 自旋向下粒子数（固定扇区）
+
+outputs:
+  E0: 基态能量（绝对值，float）
+  e0: 能量密度 E0/L（float）
+  residual: 数值残差 ||H psi0 - E0 psi0|| / max(1, |E0|)（数值层验证不变量）
+  dim: 扇区希尔伯特空间维数 C(L, n_up) * C(L, n_down)（int）
+  gap: 同一扇区内第一激发态与基态的能量差（float）
+  method: 求解方法说明（str）
+
+invariants:
+  - residual <= 1e-10（数值层）
+  - dim == C(L, n_up) * C(L, n_down)（维数自洽，可独立复算）
+  - 【必须】t=0 原子极限对所有合法的 (L, n_up, n_down) 成立，包括 dim 超过稠密阈值的
+    稀疏/Lanczos 路径。t=0 时 H 是对角矩阵、本征值只有 {0, U, 2U, ...} 少数
+    几个且零空间巨大：朴素的 eigsh(which='SA') 会丢失零空间分量而收敛到次低
+    本征值（实测在 L=8 半满返回 E0=U 而非 0）。半满且 L 为偶数时最小双重占据数
+    为 0，因此 E0 必须为 0
+  - t=0 且 U=0 时 H 恒为零矩阵、整个扇区简并，E0 = 0，且不得抛出未捕获异常
+  - 【必须】对任何落在本 spec 允许区间内的输入，不得抛出未捕获异常
+    （含 ARPACK Starting vector is zero / 退化起始向量等情形）
+  - L=2 且 n_up=n_down=1：E0 = (U - sqrt(U^2 + 16 t^2)) / 2（解析闭式）
+  - U=0：E0 = sum_{sigma} sum_{k=1}^{n_sigma} eps_k，eps_k = -2 t cos(k pi / (L+1))（自由费米子解析谱）
+  - t=0：E0 = 0（原子极限；半满且无双重占据的任何组态能量均为 0，基态简并）
+
+falsification_basis:
+  - 解析：L=2 两站点闭式解 E0 = (U - sqrt(U^2 + 16 t^2)) / 2
+  - 解析：U=0 开放链自由费米子单粒子谱 eps_k = -2 t cos(k pi / (L+1))，k = 1..L
+  - 解析：t=0 原子极限 E0 = 0（半满）
+  - 独立实现：全 Fock 空间（2^{2L}）稠密对角化 oracle
+    （qresearch.verification.golden.dense_hubbard_ground），不做扇区约化、
+    不用 Jordan-Wigner 技巧，与工具实现路径无关
+
+fixtures_ref: tool_specs/hubbard_ed.golden.yaml
+fixtures_install_to: benchmarks/golden/hubbard_ed.yaml
+
+anti_collusion: |-
+  出题人 = 本 spec 作者（人）+ 解析/独立 oracle 来源；
+  答题人 = DSH 编码站。fixtures 数值与容差在编码开始前已锁定（本文件 + golden yaml），
+  DSH 全程不可见修改路径；审批时 diff 报告对照本 spec 审查。
+
+known_limitations:
+  - dim = C(L, L/2)^2 随 L 指数增长；L>12 时稠密路径不可用（ED 是有限希尔伯特空间
+    方法，不意味着免除浮点误差与迭代收敛检查）
+  - 只支持开放边界（OBC）。周期边界（PBC）的边界键约定不同，需要另立 spec，
+    不得用本工具冒充
+  - 只支持固定 (n_up, n_down) 扇区；不给出跨扇区的全局基态，也不处理
+    非零温或有限化学势
+  - t<0 或 U<0 在数学上可算，但 fixtures 只用 t>0、U>=0 覆盖

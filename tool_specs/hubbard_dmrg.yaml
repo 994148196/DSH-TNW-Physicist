@@ -1,0 +1,139 @@
+# Tool Spec：hubbard_dmrg —— Phase 6 Tool Builder 的出题侧工件（先于任何实现定稿）
+#
+# 缺口来源：一维 Hubbard 链的 DMRG 研究需要变分后端与 bond dimension 收敛量，
+# 注册表中 dmrg_adapter 只认 Heisenberg（qtn.MPO_ham_heis），无 Hubbard 通道。
+# 铁律（计划 v2 §8）：出题人≠答题人。
+tool: hubbard_dmrg
+version: "0.1.0"
+type: tensor_network
+purpose: 一维单带 Hubbard 链（开放边界、固定粒子数扇区）有限尺寸 DMRG 基态能量与 bond dimension 收敛量
+
+physics_convention: >-
+  H = -t * sum_{i=0}^{L-2} sum_{sigma in {up,dn}}
+        ( c^dag_{i,sigma} c_{i+1,sigma} + h.c. )
+      + U * sum_{i=0}^{L-1} n_{i,up} n_{i,dn}，
+  开放边界（无边界键双计）；固定 (n_up, n_down) 扇区。
+  **本约定必须与 hubbard_ed 逐条一致**，否则两者之间的差分基准没有意义。
+  与 hubbard_ed 的关键区别在实现路径：哈密顿量、Jordan-Wigner 处理、变分优化
+  与张量网络收缩**全部由 TeNPy 提供**，不得复用 hubbard_ed 的任何算符代码。
+  TeNPy 侧建模用 tenpy.models.hubbard.FermiHubbardModel，
+  参数 L、t、U、mu=0、V=0、bc_MPS="finite"、bc_x="open"、cons_N="N"、cons_Sz="Sz"。
+
+execution_environment: >-
+  引擎 venv 是 Python 3.13，而 physics-tenpy 1.1.1 只发布 cp312 编译轮子
+  （Tag: cp312-cp312-win_amd64，Root-Is-Purelib: false），无法装入引擎 venv。
+  因此实现**必须**按下列顺序选择执行路径，并把实际走的那条记录在输出的
+  execution_path 字段里：
+    (1) "in_process"  —— 进程内 import tenpy 成功，直接进程内求解；
+    (2) "subprocess:<解释器路径>" —— 进程内不可用，但环境变量
+        QRESEARCH_TENPY_PYTHON（默认 C:\Users\HP\.conda\envs\tnw-baseline\python.exe）
+        指向一个装有 tenpy 的解释器：以子进程委派，输入用 JSON 经 stdin 传入、
+        结果用 JSON 经 stdout 取回（stdout 里除 JSON 外不得有别的输出；
+        诊断信息走 stderr）；
+    (3) 两者都不可用 —— 抛出带明确信息的异常。
+  **严禁**在无 TeNPy 时返回估计值、占位值、经典近似值或任何非真实 DMRG 结果；
+  也严禁静默回退成稠密对角化后仍以 DMRG 名义报数。
+
+inputs:
+  L:
+    type: int
+    bounds: "3 <= L <= 32"
+    desc: 链长（格点数）。L=2 不支持（TwoSiteDMRGEngine 要求 L>2）
+  t:
+    type: float
+    default: 1.0
+    desc: 跃迁振幅
+  U:
+    type: float
+    default: 4.0
+    desc: 在位库仑排斥强度
+  n_up:
+    type: int
+    bounds: "0 <= n_up <= L"
+    desc: 自旋向上粒子数
+  n_down:
+    type: int
+    bounds: "0 <= n_down <= L"
+    desc: 自旋向下粒子数
+  chi_max:
+    type: int
+    default: 64
+    bounds: "4 <= chi_max <= 512"
+    desc: 请求的最大 bond dimension
+  init_state:
+    type: str
+    default: domain
+    enum: [domain, alternating]
+    desc: 乘积初态（domain=前 n_up 个 up、接着 n_down 个 down；alternating=上下交替后补齐）
+
+outputs:
+  E0: 基态能量（变分上界，float）
+  e0: 能量密度 E0/L（float）
+  chi_max_requested: 请求的 chi_max（int）
+  bond_dimension_max: 收敛态实际使用的最大键维（int）
+  bond_dimensions: 逐键的实际键维列表（list[int]）
+  truncation_error: 最后一次 sweep 各键截断权重的最大值（float）
+  energy_variance: <H^2> - <H>^2（float，不依赖任何参考解的态质量判据）
+  sweeps: 实际 sweep 次数（int）
+  tenpy_version: TeNPy 版本（str）
+  execution_path: 实际执行路径（"in_process" 或 "subprocess:<解释器>"）
+  method: 求解方法说明（str）
+
+invariants:
+  - E0 >= E0(hubbard_ed) - 1e-8（DMRG 是变分方法，能量不得低于精确基态）
+  - L<=8 时 |E0 - E0(hubbard_ed)| <= 1e-8（跨实现一致性）
+  - bond_dimension_max <= chi_max_requested
+  - 【必须】显式处理 TeNPy 的 max_trunc_err 一致性守卫（TeNPy 默认 1e-4，会在
+    sweep 末尾抛 TenpyInconsistencyError；见 tenpy/algorithms/mps_common.py 的
+    consistency_check）。chi_max 的合法区间是 [4, 512]，低 chi 下截断必然远超
+    1e-4 —— 实现必须让这些合法输入**正常返回变分上界**，并把截断误差如实交给
+    truncation_error / energy_variance 报告，而不是对合法输入崩溃。可行做法：
+    向 TeNPy 显式传 max_trunc_err=None（使其降级为 warning）或给足够大的阈值。
+    子进程路径还必须把子进程的 stderr 摘要带进异常信息，否则调用方只看到
+    "worker failed with exit code 1" 这种无法诊断的报错。
+  - 【必须】不输出本 spec outputs 之外的字段；确需输出（例如 residual）必须在此
+    先声明。多出的字段即使被 golden 忽略，也属于未声明契约。
+  - init_state 在 n_up + n_down > L（过满）时的约定必须显式定义并记录
+  - energy_variance = max(<H^2> - <H>^2, 0)：原始 <H^2> - <H>^2 由 MPS 收缩得到，
+    双精度下会因舍入出现**负的小量**（1e-14 量级）。实现必须先把负值钳到 0 再输出，
+    不得原样返回负方差（方差为负是非物理的）；此条与 golden 的
+    energy_variance_exact_at_L4（tol 1e-12）配套
+  - energy_variance 随 chi_max 增大单调不增
+  - 半满且 n_up==n_down 时能量与 S^z_tot=0 扇区一致
+  - L=4 半满扇区维数仅 36，精确态所需的最大键维很小：**任何 chi_max >= 16
+    都给出同一能量与 0 截断**。因此「增大 chi_max 结果是否变化」在 L=4 上
+    不可测，这不是缺陷而是该尺寸的既定事实，报告必须如实声明。
+
+falsification_basis:
+  - 解析：U=0 自由费米子 E0 = sum_sigma sum_{k<=n_sigma} (-2 t cos(k pi / (L+1)))
+  - 跨实现：hubbard_ed（扇区精确对角化，独立实现路径）在完全相同系统上比较
+  - 独立实现：qresearch.verification.golden.dense_hubbard_ground
+  - 变分性：E0 必须不低于精确基态（违反即为符号或约定错误）
+  - 状态质量：energy_variance 在 chi 足够时趋于 0
+
+fixtures_ref: tool_specs/hubbard_dmrg.golden.yaml
+fixtures_install_to: benchmarks/golden/hubbard_dmrg.yaml
+
+anti_collusion: |-
+  出题人 = 本 spec 作者（人）+ 解析/独立 oracle/hubbard_ed 跨实现来源；
+  答题人 = DSH 编码站。fixtures 数值与容差在编码开始前已锁定。
+
+known_limitations:
+  - L=4 下 bond dimension 收敛不可测（这一条最关键）：扇区维数 36、精确态最大键维约 16，
+    任何 chi_max >= 16 结果逐位相同（实测依据：AI_TNW 记录
+    runs/20260910T140319Z/B4_L4_U4，chi_max_requested=256 而
+    bond_dimension_max=16、truncation_error=0.0、energy_variance=0.0）。
+    真实的 chi 收敛研究需要 L>=16
+  - 只支持开放边界；PBC 需要另立 spec
+  - L=2 不支持
+  - DMRG 不提供能隙；能隙必须由 hubbard_ed 给出
+  - 依赖外部 TeNPy 解释器；该依赖使结果带上「环境依赖」这一层不确定性，
+    必须由 execution_path 与 tenpy_version 两个字段留痕
+  - 默认 chi_max=64 不足以在 L>=8 满足跨实现一致性不变量：批评者实测
+    L=8 半满 U/t=4 在 chi_max=64 下 |E0 - E0(hubbard_ed)| = 1.35e-7（> 1e-8），
+    chi_max=256 才回到 ~1e-15。实现应把「达到 1e-8 需要多大 chi」通过
+    truncation_error / energy_variance 暴露，而不是让调用方盲目相信默认值
+  - 每次 run() 都重启子进程探测 TeNPy 会带来固定的启动开销（探测超时上限 180s），
+    批量 chi 扫描会累积；实现宜缓存探测结果，且不应把某台机器的专属解释器路径
+    当作唯一 fallback（未设 QRESEARCH_TENPY_PYTHON 时须给出可诊断的报错）
+  - chi_max=512 在 L>=16 时单点约 90 秒（AI_TNW 实测），大扫描需拆分为多次尝试

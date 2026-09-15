@@ -1,0 +1,138 @@
+# golden 基准：hubbard_ed（spec 先行——本文件先于工具实现定稿，出题人≠答题人）
+#
+# 约定：H = -t Σ_{i=0}^{L-2} Σ_σ (c†_{iσ}c_{i+1,σ} + h.c.) + U Σ_i n_{i↑}n_{i↓}
+#       开放边界（OBC，无边界键双计）；全局模排序 0up..(L-1)up,0dn..(L-1)dn。
+# 数值来源：
+#   - 解析：L=2 且 n_up=n_dn=1 → E0 = (U - sqrt(U^2 + 16 t^2)) / 2
+#   - 解析：U=0 自由费米子 → ε_k = -2t cos(kπ/(L+1))，k=1..L；E0 = Σ_σ Σ_{k≤n_σ} ε_k
+#   - 解析：t=0 原子极限（半满、无双重占据）→ E0 = 0
+#   - 跨实现：L=4 U/t=4 半满 E0 = -1.9531453086845543
+#             来源 AI_TNW 三方交叉验证记录 runs/20260910T140319Z/B4_L4_U4
+#             （ED / TeNPy DMRG / quimb-JW 三路一致，见该 result.json）
+#   - 独立实现：qresearch.verification.golden.dense_hubbard_ground
+#             （全 2^{2L} Fock 空间稠密对角化，不做扇区约化）
+# 工具注册前由 Tool Builder 以 tool_override 运行本文件；注册后安装到 benchmarks/golden/。
+tool: hubbard_ed
+cases:
+  # ---------------------------------------------------------------- 软件层
+  - name: two_site_analytic_U4
+    layer: software
+    inputs: {L: 2, t: 1.0, U: 4.0, n_up: 1, n_down: 1}
+    checks:
+      # (4 - sqrt(16 + 16)) / 2 = (4 - sqrt(32)) / 2
+      - {op: approx, field: E0, value: -0.8284271247461903, tol: 1.0e-10}
+
+  - name: two_site_analytic_U0
+    layer: software
+    inputs: {L: 2, t: 1.0, U: 0.0, n_up: 1, n_down: 1}
+    checks:
+      # U=0 → E0 = -2t = -2.0（两站点单键，两个自旋各贡献 -t）
+      - {op: approx, field: E0, value: -2.0, tol: 1.0e-10}
+
+  - name: dimension_selfconsistency_L4
+    layer: software
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2}
+    checks:
+      # dim = C(4,2) * C(4,2) = 6 * 6 = 36，可独立复算
+      - {op: approx, field: dim, value: 36.0, tol: 0.0}
+
+  # ---------------------------------------------------------------- 数值层
+  - name: residual_check_L4
+    layer: numerical
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2}
+    checks:
+      - {op: approx, field: residual, value: 0.0, tol: 1.0e-10}
+
+  # ---------------------------------------------------------------- 物理层
+  - name: noninteracting_free_fermion_L4
+    layer: physics
+    inputs: {L: 4, t: 1.0, U: 0.0, n_up: 2, n_down: 2}
+    checks:
+      # ε_k = -2cos(kπ/5)：-1.618033988749895, -0.6180339887498949, +0.618..., +1.618...
+      # 每自旋取最低 2 个：-2.23606797749979；两个自旋 → -4.47213595499958 = -2*sqrt(5)
+      - {op: approx, field: E0, value: -4.47213595499958, tol: 1.0e-10}
+      # e0 = E0/L = -1.118033988749895 = -sqrt(5)/2
+      - {op: approx, field: e0, value: -1.118033988749895, tol: 1.0e-10}
+
+  - name: noninteracting_free_fermion_L6
+    layer: physics
+    inputs: {L: 6, t: 1.0, U: 0.0, n_up: 3, n_down: 3}
+    checks:
+      # ε_k = -2cos(kπ/7)，最低 3 个之和 = -3.493959207434934；两个自旋 → -6.987918414869868
+      - {op: approx, field: E0, value: -6.987918414869868, tol: 1.0e-10}
+      # e0 = -1.164653069144978（与 AI_TNW runs/.../B4_L6_U0 的 E/L 读数一致）
+      - {op: approx, field: e0, value: -1.164653069144978, tol: 1.0e-10}
+
+  - name: atomic_limit_t0_L4
+    layer: physics
+    inputs: {L: 4, t: 0.0, U: 4.0, n_up: 2, n_down: 2}
+    checks:
+      # t=0：每个站点单占据即可无双重占据 → E0 = 0（基态简并）
+      - {op: approx, field: E0, value: 0.0, tol: 1.0e-10}
+
+  # ---- 以下三条由 Tool Builder 批评者（2026-09-15）暴露的缺陷回填而成 ----
+  # 批评者原话："golden 只在 L=4 测 t=0（走 dense/eigh 路径，正确），恰好绕开
+  # dim>2048 的 Lanczos 缺陷，现有 fixtures 无法暴露该问题"。补上 Lanczos 路径的
+  # t=0 用例，使该缺陷成为 golden 可判定的失败（修复循环据此回喂编码站）。
+  - name: atomic_limit_t0_L8_lanczos_path
+    layer: physics
+    inputs: {L: 8, t: 0.0, U: 4.0, n_up: 4, n_down: 4}
+    checks:
+      # dim = C(8,4)^2 = 4900 > 2048 → 必须走稀疏 Lanczos 路径。
+      # 半满 L=8 可零双重占据（每格 1 个电子）→ 精确基态 E0 = 0。
+      # t=0 时 H 对角、本征值只有 {0, U, 2U, ...}、零空间巨大；朴素的
+      # eigsh(which='SA') 会丢失零空间分量而收敛到次低本征值 U=4。
+      - {op: approx, field: E0, value: 0.0, tol: 1.0e-8}
+
+  - name: t0_u0_fully_degenerate_no_crash_L8
+    layer: software
+    inputs: {L: 8, t: 0.0, U: 0.0, n_up: 4, n_down: 4}
+    checks:
+      # t=0 且 U=0 → H 恒为全零矩阵，整个扇区都是基态（E0 = 0）。
+      # 这是 spec 允许区间的合法输入（2<=L<=12、0<=n_sigma<=L），不得抛未捕获
+      # 异常（批评者实测抛出 ArpackError -9: Starting vector is zero）。
+      - {op: approx, field: E0, value: 0.0, tol: 1.0e-8}
+
+  - name: atomic_limit_t0_L10_lanczos_path
+    layer: physics
+    inputs: {L: 10, t: 0.0, U: 4.0, n_up: 5, n_down: 5}
+    checks:
+      # dim = C(10,5)^2 = 63504 > 2048 → Lanczos 路径；半满可零双重占据 → E0 = 0
+      - {op: approx, field: E0, value: 0.0, tol: 1.0e-8}
+
+  - name: half_filled_U4_L4_cross_implementation
+    layer: physics
+    inputs: {L: 4, t: 1.0, U: 4.0, n_up: 2, n_down: 2}
+    checks:
+      - {op: approx, field: E0, value: -1.9531453086845543, tol: 1.0e-9}
+      - {op: approx, field: e0, value: -0.48828632717113857, tol: 1.0e-9}
+
+  # ------------------------------------------------- 独立 oracle（全 Fock 空间）
+  - name: oracle_dense_half_filled_L2
+    layer: physics
+    inputs: {L: 2, t: 1.0, n_up: 1, n_down: 1}
+    sweep: {U: [0.0, 2.0, 4.0, 8.0]}
+    checks:
+      - {op: oracle_dense, oracle: hubbard, field: E0, tol: 1.0e-10}
+
+  - name: oracle_dense_half_filled_L4
+    layer: physics
+    inputs: {L: 4, t: 1.0, n_up: 2, n_down: 2}
+    sweep: {U: [0.0, 2.0, 4.0, 8.0]}
+    checks:
+      - {op: oracle_dense, oracle: hubbard, field: E0, tol: 1.0e-10}
+
+  - name: oracle_dense_half_filled_L6
+    layer: physics
+    inputs: {L: 6, t: 1.0, n_up: 3, n_down: 3}
+    sweep: {U: [0.0, 4.0]}
+    checks:
+      - {op: oracle_dense, oracle: hubbard, field: E0, tol: 1.0e-9}
+
+  - name: oracle_dense_off_half_filling_L4
+    layer: physics
+    inputs: {L: 4, t: 1.0, n_up: 3, n_down: 1}
+    sweep: {U: [0.0, 4.0]}
+    checks:
+      # 非半满：基态不是自旋单态，用于排除「假设 N_up=N_dn」的实现
+      - {op: oracle_dense, oracle: hubbard, field: E0, tol: 1.0e-10}
